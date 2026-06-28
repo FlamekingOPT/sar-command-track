@@ -23,6 +23,7 @@ export function ZonePanel({ zones, onStatusChange }) {
               <span style={{ flex: 1, fontSize: 12, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {zone.assignedTo ?? '—'}
               </span>
+              <StatusPill status={zone.status} />
               <select value={zone.status} onChange={e => onStatusChange(zone.id, e.target.value)}
                 style={{ fontSize: 11, padding: '1px 4px' }}>
                 {ALL_STATUSES.map(s => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}

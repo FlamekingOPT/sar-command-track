@@ -6,7 +6,7 @@ import { CommandMap } from './map/CommandMap';
 import { ZonePanel } from './ui/ZonePanel';
 import { subdivideZone } from './zones/subdivider';
 import { createZone, updateZoneStatus, watchZones } from './firebase/zones';
-import { updateSearchBoundary } from './firebase/searches';
+import { updateSearchBoundary, updateSearchLetterZones, watchSearch } from './firebase/searches';
 
 const DAY_ID = 'day-1';
 
@@ -22,6 +22,18 @@ export default function App() {
     return watchZones(searchId, DAY_ID, setZones);
   }, [searchId]);
 
+  useEffect(() => {
+    if (!searchId) return;
+    return watchSearch(searchId, search => {
+      if (search.letterZones?.length) {
+        setLetterZones(search.letterZones.map(z => ({
+          letter: z.letter,
+          feature: { type: 'Feature', geometry: z.geometry, properties: {} },
+        })));
+      }
+    });
+  }, [searchId]);
+
   if (user === undefined) return <p style={{ padding: 24 }}>Loading…</p>;
   if (!user) return <LoginPage />;
   if (!searchId) return <SearchSetup onSearchCreated={setSearchId} />;
@@ -34,7 +46,8 @@ export default function App() {
       const letter = String.fromCharCode(65 + letterZones.length); // A, B, C…
       const updated = [...letterZones, { letter, feature }];
       setLetterZones(updated);
-      const subZones = subdivideZone(feature, 1);
+      await updateSearchLetterZones(searchId, updated);
+      const subZones = subdivideZone(feature, 4);
       for (let i = 0; i < subZones.length; i++) {
         await createZone(searchId, DAY_ID, { letter, number: i + 1, polygon: subZones[i].geometry });
       }

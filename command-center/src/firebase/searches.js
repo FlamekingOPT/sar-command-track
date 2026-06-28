@@ -21,3 +21,15 @@ export function watchSearches(cb) {
     cb(snap.docs.map(d => ({ id: d.id, ...d.data() })))
   );
 }
+
+export async function updateSearchLetterZones(searchId, letterZones) {
+  await updateDoc(doc(db, 'searches', searchId), {
+    letterZones: letterZones.map(z => ({ letter: z.letter, geometry: z.feature.geometry })),
+  });
+}
+
+export function watchSearch(searchId, cb) {
+  return onSnapshot(doc(db, 'searches', searchId), snap => {
+    if (snap.exists()) cb({ id: snap.id, ...snap.data() });
+  });
+}
