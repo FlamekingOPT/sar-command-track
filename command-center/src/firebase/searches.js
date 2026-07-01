@@ -9,11 +9,20 @@ export async function createSearch({ name, date }) {
 }
 
 export async function updateSearchBoundary(searchId, boundary) {
-  await updateDoc(doc(db, 'searches', searchId), { boundary });
+  await updateDoc(doc(db, 'searches', searchId), { boundary: JSON.stringify(boundary) });
 }
 
 export async function publishSearch(searchId) {
   await updateDoc(doc(db, 'searches', searchId), { status: 'active' });
+}
+
+export async function updateSearchLetterZones(searchId, letterZones) {
+  await updateDoc(doc(db, 'searches', searchId), {
+    letterZones: letterZones.map(z => ({
+      letter: z.letter,
+      geometry: JSON.stringify(z.feature.geometry),
+    })),
+  });
 }
 
 export function watchSearches(cb) {
@@ -22,14 +31,18 @@ export function watchSearches(cb) {
   );
 }
 
-export async function updateSearchLetterZones(searchId, letterZones) {
-  await updateDoc(doc(db, 'searches', searchId), {
-    letterZones: letterZones.map(z => ({ letter: z.letter, geometry: z.feature.geometry })),
-  });
-}
-
 export function watchSearch(searchId, cb) {
   return onSnapshot(doc(db, 'searches', searchId), snap => {
-    if (snap.exists()) cb({ id: snap.id, ...snap.data() });
+    if (!snap.exists()) return;
+    const data = snap.data();
+    cb({
+      id: snap.id,
+      ...data,
+      boundary: data.boundary ? JSON.parse(data.boundary) : null,
+      letterZones: (data.letterZones ?? []).map(z => ({
+        ...z,
+        geometry: z.geometry ? JSON.parse(z.geometry) : null,
+      })),
+    });
   });
 }

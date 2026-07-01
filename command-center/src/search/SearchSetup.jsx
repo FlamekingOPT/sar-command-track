@@ -14,8 +14,9 @@ export function SearchSetup({ onSearchCreated }) {
     try {
       const { id } = await createSearch({ name, date });
       onSearchCreated(id);
-    } catch {
-      setError('Failed to create search. Check Firebase config.');
+    } catch (err) {
+      console.error('createSearch failed:', err);
+      setError(`Failed to create search: ${err?.message ?? err}`);
       setLoading(false);
     }
   }

@@ -12,7 +12,7 @@ export function ZonePanel({ zones, onStatusChange }) {
     <div style={{ width: 280, overflowY: 'auto', padding: 16, borderLeft: '1px solid #e5e7eb' }}>
       <h3 style={{ marginTop: 0 }}>Zones</h3>
       {zones.length === 0 && (
-        <p style={{ color: '#9ca3af', fontSize: 13 }}>No zones yet. Draw letter zones on the map.</p>
+        <p style={{ color: '#9ca3af', fontSize: 13 }}>No zones yet. Draw a boundary and generate zones.</p>
       )}
       {Object.entries(byLetter).sort().map(([letter, lzones]) => (
         <div key={letter} style={{ marginBottom: 16 }}>
