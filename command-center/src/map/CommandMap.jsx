@@ -25,7 +25,7 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
   useEffect(() => {
     const map = new mapboxgl.Map({
       container: containerRef.current,
-      style: 'mapbox://styles/mapbox/outdoors-v12',
+      style: 'mapbox://styles/mapbox/streets-v12',
       center: [-118.25, 34.05],
       zoom: 11,
     });
