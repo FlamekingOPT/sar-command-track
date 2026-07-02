@@ -38,6 +38,7 @@ sar-command-track/
       index.js             — entrypoint: Telegraf init, command registration, long polling start
       firebase/
         config.js          — Firebase Admin SDK init (service account)
+        zones.js           — assignZone(searchId, dayId, zoneId, { status, assignedTo }) — the ONLY zone write the bot performs
       commands/
         register.js        — /register
         available.js       — /available
@@ -91,7 +92,11 @@ searches/{searchId}
    - If more than one search is `active`, a code is required; if missing or unrecognized, bot replies asking for a valid code.
 3. Bot validates the requested letters exist for that search's current day; invalid letters get a reply listing the valid ones.
 4. **Assignment logic** (see §4) picks one sub-zone across the requested letters.
-5. Bot updates the zone doc (`status: 'assigned'`, `assignedTo: volunteerId`) and DMs the volunteer their assigned zone + link.
+5. Bot calls `assignZone(searchId, dayId, zoneId, { status: 'assigned', assignedTo: volunteerId })` and DMs the volunteer their assigned zone + link.
+
+### Zone write scope (bot restriction)
+
+The bot uses the Firebase Admin SDK, which technically bypasses all Firestore security rules — nothing stops it from writing anything. To keep that power in check, the bot's *only* code path that touches a zone document is `firebase/zones.js`'s `assignZone()`, which sets exactly two fields: `status` and `assignedTo`. The bot never redraws a zone's `polygon`, never changes `letter`/`number`, and never creates or deletes a zone doc — those stay exclusively Command Center (staff, authenticated) operations. This is enforced by convention/code review, not by a Firestore rule (since Admin SDK ignores rules), so any future change that has the bot touch zones beyond assignment should go through this same narrow helper rather than a generic zone-update function.
 
 ### Publish / New Day (triggered by Command Center, not a Telegram command)
 
@@ -155,3 +160,4 @@ Same TDD approach used for `subdivideZone` in Phase 1: write Vitest cases for th
 | Firestore access | Firebase Admin SDK with a service account (bypasses client security rules) |
 | Multiple concurrent searches | Supported — one shared Telegram group, disambiguated by an auto-generated short code, only required when >1 search is active |
 | Mid-day re-search flagging | Bot proactively announces it in the group |
+| Bot's zone write scope | Restricted by convention to a single `assignZone()` helper touching only `status`/`assignedTo` — no redraws, no create/delete, even though Admin SDK could technically do more |
