@@ -110,6 +110,7 @@ This keeps zone *creation* (drawing new zones) staff-only, while letting the Sea
 
 ## 3. Map, GPS & Coverage
 
+- Map style: `mapbox://styles/mapbox/streets-v12` — matches the Command Center (also switched to Streets), since searches are mostly urban and street names/addresses/buildings matter more than terrain contours.
 - On load, `SearcherMap` centers on the zone boundary (highlighted) using the zone's polygon from `searchId/days/dayId/zones/zoneId`.
 - `useGpsTracking` starts `navigator.geolocation.watchPosition` immediately on mount (after permission grant) — no manual "start" action.
 - Each GPS reading is pushed to `offlineQueue` (IndexedDB) immediately; a timer flushes the queue to `tracks/{volunteerId}.points` (array append) every 10 seconds when online.
@@ -175,3 +176,4 @@ GPS tracking, real offline behavior, and PWA installability are not meaningfully
 | Hosting | Second Firebase Hosting site in the same project, separate from Command Center |
 | Identity | Token-based (via `searcherLinks` collection), no Firebase Auth |
 | Firestore rules | Zone `status` field updatable without auth (matches existing trust model for tracks/markers); zone create/delete remains staff-only |
+| Map style | Streets (`streets-v12`), not Outdoors/terrain — searches are mostly urban. Command Center updated to match (was `outdoors-v12`, now `streets-v12`) |
