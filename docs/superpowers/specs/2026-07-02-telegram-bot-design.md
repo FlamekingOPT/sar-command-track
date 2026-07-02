@@ -42,7 +42,7 @@ sar-command-track/
         register.js        — /register
         available.js       — /available
       assignment/
-        assign.js          — subdivideZone... need-based zone assignment logic
+        assign.js          — need-based zone assignment logic
       search/
         resolveSearch.js   — resolves an incoming message to a search doc (handles single vs. multi-search + code)
     test/
