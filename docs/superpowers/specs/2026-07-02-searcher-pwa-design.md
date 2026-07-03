@@ -1,6 +1,6 @@
 # Design — Searcher PWA (Plan 3)
 
-**Date:** 2026-07-02 · **Status: DESIGN — not built.**
+**Date:** 2026-07-02 · **Status: APPROVED 2026-07-03 — not built.** Implementation plan: `docs/superpowers/plans/2026-07-03-sar-phase-3-searcher-pwa.md`
 
 Builds on `docs/superpowers/specs/2026-06-28-sar-command-track-design.md` (§4, §6, §8) and implements **Plan 3** referenced in `docs/superpowers/plans/2026-06-28-sar-phase-1-command-center.md`.
 
