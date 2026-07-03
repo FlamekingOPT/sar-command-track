@@ -3,7 +3,7 @@ import { parseToken } from './firebase/token';
 import { resolveLink } from './firebase/links';
 import { getZone, watchZone } from './firebase/zones';
 import { enqueue } from './gps/offlineQueue';
-import { startSync } from './gps/sync';
+import { startSync, flushOnce } from './gps/sync';
 import { useGpsTracking } from './gps/useGpsTracking';
 import { SearcherMap } from './map/SearcherMap';
 import { StatusButton } from './ui/StatusButton';
@@ -68,6 +68,15 @@ export default function App() {
     setPinLocation(null);
   }
 
+  // Status changes flip the UI instantly and sync immediately — waiting for
+  // the 10s tick made the Complete button look dead (watchZone corrects us
+  // if the write is rejected; offline, the queue still delivers it later).
+  async function handleStatusChange(status) {
+    setZone(z => ({ ...z, status }));
+    await enqueue('status', { status });
+    flushOnce(link).catch(() => {});
+  }
+
   return (
     <div style={{ position: 'relative', height: '100%' }}>
       <SearcherMap
@@ -101,8 +110,8 @@ export default function App() {
 
       <StatusButton
         status={zone.status}
-        onComplete={() => enqueue('status', { status: 'searched' })}
-        onReopen={() => enqueue('status', { status: 'in_progress' })}
+        onComplete={() => handleStatusChange('searched')}
+        onReopen={() => handleStatusChange('in_progress')}
       />
     </div>
   );
