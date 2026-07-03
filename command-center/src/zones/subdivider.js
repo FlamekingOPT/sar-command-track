@@ -64,7 +64,8 @@ export function subdivideWithBarriers(polygon, n, barrierLines) {
 
 // Plain strip subdivision (used for sub-zones and as fallback)
 export function subdivideZone(polygon, n) {
-  if (n <= 1) return [polygon];
+  if (n <= 0) throw new Error('n must be positive');
+  if (n === 1) return [polygon];
   return stripSubdivide(polygon, n);
 }
 
