@@ -47,6 +47,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const readOnly = searchStatus === 'complete';
 
   async function handleFeatureDrawn(feature, type) {
+    if (readOnly) return;
     setDrawMode('idle');
     try {
       if (type === 'boundary') {
