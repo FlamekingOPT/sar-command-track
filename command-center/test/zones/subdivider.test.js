@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -35,5 +35,49 @@ describe('subdivideZone', () => {
     const result = subdivideZone(SQUARE, 4);
     const subArea = result.reduce((sum, z) => sum + turf.area(z), 0);
     expect(subArea / turf.area(SQUARE)).toBeGreaterThan(0.9);
+  });
+});
+
+describe('subdivideWithBarriers', () => {
+  // Vertical barrier 25% of the way across the square, so a genuine barrier
+  // split yields ~25/75 areas — distinguishable from the 50/50 strip fallback.
+  const BARRIER_X = -118.2375;
+
+  it('splits along a barrier that ends inside the polygon', () => {
+    // Enters from the south but stops at 34.08 — short of the north edge at 34.10
+    const line = turf.lineString([
+      [BARRIER_X, 34.04],
+      [BARRIER_X, 34.06],
+      [BARRIER_X, 34.08],
+    ]);
+
+    const zones = subdivideWithBarriers(SQUARE, 2, [line]);
+    expect(zones).toHaveLength(2);
+
+    const areas = zones.map(z => turf.area(z));
+    const smallShare = Math.min(...areas) / turf.area(SQUARE);
+    expect(smallShare).toBeGreaterThan(0.1);
+    expect(smallShare).toBeLessThan(0.4);
+
+    // The two zones sit on opposite sides of the barrier
+    const xs = zones.map(z => turf.centroid(z).geometry.coordinates[0]).sort((a, b) => a - b);
+    expect(xs[0]).toBeLessThan(BARRIER_X);
+    expect(xs[1]).toBeGreaterThan(BARRIER_X);
+  });
+
+  it('still splits along a barrier that fully crosses the polygon', () => {
+    const line = turf.lineString([
+      [BARRIER_X, 34.03],
+      [BARRIER_X, 34.06],
+      [BARRIER_X, 34.09],
+      [BARRIER_X, 34.12],
+    ]);
+
+    const zones = subdivideWithBarriers(SQUARE, 2, [line]);
+    expect(zones).toHaveLength(2);
+
+    const smallShare = Math.min(...zones.map(z => turf.area(z))) / turf.area(SQUARE);
+    expect(smallShare).toBeGreaterThan(0.1);
+    expect(smallShare).toBeLessThan(0.4);
   });
 });

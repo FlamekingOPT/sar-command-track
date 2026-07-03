@@ -77,8 +77,15 @@ function cutByBarrier(polygon, line) {
   try {
     if (!turf.booleanIntersects(line, polygon)) return [polygon];
 
+    // OSM ways are frequently split into short segments at intersections, so a
+    // segment's endpoint often lands inside the polygon instead of past its
+    // edge. Buffering+differencing a line that stops mid-polygon only carves a
+    // dead-end notch (stays a single Polygon) instead of a full split, so
+    // extend both ends past the polygon along their local bearing first.
+    const extended = extendPastPolygon(line, polygon);
+
     // 10m buffer creates a thin strip along the road — enough for difference to split
-    const strip = turf.buffer(line, 0.01, { units: 'kilometers' });
+    const strip = turf.buffer(extended, 0.01, { units: 'kilometers' });
     if (!strip) return [polygon];
 
     const cut = turf.difference(polygon, strip);
@@ -96,6 +103,27 @@ function cutByBarrier(polygon, line) {
   } catch {
     return [polygon];
   }
+}
+
+// Extend both ends of a line along their local bearing until past the
+// polygon's bbox, so buffering it always cuts clean through.
+function extendPastPolygon(line, polygon) {
+  const coords = line.geometry.coordinates;
+  if (coords.length < 2) return line;
+
+  // bbox diagonal is the farthest any interior endpoint can be from the edge
+  const [west, south, east, north] = turf.bbox(polygon);
+  const reach = turf.distance([west, south], [east, north], { units: 'kilometers' });
+
+  const startBearing = turf.bearing(coords[1], coords[0]);
+  const endBearing = turf.bearing(coords[coords.length - 2], coords[coords.length - 1]);
+  const newStart = turf.destination(coords[0], reach, startBearing, { units: 'kilometers' });
+  const newEnd = turf.destination(coords[coords.length - 1], reach, endBearing, { units: 'kilometers' });
+
+  return turf.lineString(
+    [newStart.geometry.coordinates, ...coords, newEnd.geometry.coordinates],
+    line.properties
+  );
 }
 
 // Merge zones pairwise by nearest centroid until we have n zones
