@@ -30,3 +30,7 @@ Consolidation: C:\Users\Jack\Desktop\SAR Command recycled; unique WIP saved as .
 Phase 2: CODE COMPLETE — remaining: Task 10 Railway deploy (after Plan 3 provides real searcher URL)
 
 # Phase 3 Searcher PWA (inline execution)
+PWA Tasks 1-9: complete (scaffold 42c0afb .. app d79ef5b, 16/16 tests, build OK)
+PWA Task 2 note: sar-searcher site created via CLI; rules deployed live 2026-07-03
+PWA Task 10: deployed to https://sar-searcher.web.app; bot SEARCHER_APP_URL updated + restarted
+Remaining: real-phone airplane-mode smoke test (Jack), Railway bot deploy (plan 2 Task 10)
