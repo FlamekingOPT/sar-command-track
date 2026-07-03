@@ -1,9 +1,11 @@
 import { collection, doc, addDoc, updateDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { db } from './config';
+import { generateSearchCode } from '../search/searchCode';
 
 export async function createSearch({ name, date }) {
   const ref = await addDoc(collection(db, 'searches'), {
     name, date, status: 'setup', createdAt: serverTimestamp(), boundary: null, letterZones: [],
+    code: generateSearchCode(),
   });
   return { id: ref.id };
 }
