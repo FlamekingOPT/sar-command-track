@@ -1,98 +1,123 @@
-### Task 1: Scaffold telegram-bot Workspace
+### Task 1: Search List Sort Order (TDD)
 
 **Files:**
-- Create: `telegram-bot/package.json`
-- Create: `telegram-bot/.gitignore`
-- Create: `telegram-bot/.env.example`
-- Create: `telegram-bot/src/constants.js`
-- Create: `telegram-bot/src/firebase/config.js`
+- Create: `command-center/src/home/sortSearches.js`
+- Test: `command-center/test/home/sortSearches.test.js`
 
 **Interfaces:**
-- Produces: `db` (Admin Firestore instance) exported from `firebase/config.js`; `DAY_ID` from `constants.js`; working `npm test` in `telegram-bot/`
-- Consumed by: every later task
+- Produces: `sortSearches(searches: Array<{ id, status, createdAt }>): Array<search>` — pure, does not mutate its input. Sort key: `status` priority (`active` → `setup` → `complete` → anything else last), then `createdAt` descending within a status group. A `createdAt` of `null`/`undefined` (a doc whose `serverTimestamp()` hasn't resolved yet) sorts as the newest.
+- Consumed by: Task 3 (`HomeDashboard`)
 
-- [ ] **Step 1: Create telegram-bot/package.json**
+- [ ] **Step 1: Write failing tests**
 
-```json
-{
-  "name": "telegram-bot",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "main": "src/index.js",
-  "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --env-file=.env src/index.js",
-    "test": "vitest run"
-  }
+```javascript
+// command-center/test/home/sortSearches.test.js
+import { describe, it, expect } from 'vitest';
+import { sortSearches } from '../../src/home/sortSearches.js';
+
+function ts(ms) {
+  return { toMillis: () => ms }; // mimics a Firestore Timestamp
 }
+
+describe('sortSearches', () => {
+  it('orders active before setup before complete', () => {
+    const searches = [
+      { id: 'c', status: 'complete', createdAt: ts(1) },
+      { id: 'a', status: 'active', createdAt: ts(1) },
+      { id: 's', status: 'setup', createdAt: ts(1) },
+    ];
+    expect(sortSearches(searches).map(s => s.id)).toEqual(['a', 's', 'c']);
+  });
+
+  it('orders newer createdAt first within the same status', () => {
+    const searches = [
+      { id: 'old', status: 'active', createdAt: ts(100) },
+      { id: 'new', status: 'active', createdAt: ts(200) },
+    ];
+    expect(sortSearches(searches).map(s => s.id)).toEqual(['new', 'old']);
+  });
+
+  it('treats a missing createdAt as the most recent', () => {
+    const searches = [
+      { id: 'has-timestamp', status: 'active', createdAt: ts(999999) },
+      { id: 'just-created', status: 'active', createdAt: null },
+    ];
+    expect(sortSearches(searches).map(s => s.id)).toEqual(['just-created', 'has-timestamp']);
+  });
+
+  it('accepts plain millisecond numbers for createdAt', () => {
+    const searches = [
+      { id: 'old', status: 'setup', createdAt: 100 },
+      { id: 'new', status: 'setup', createdAt: 200 },
+    ];
+    expect(sortSearches(searches).map(s => s.id)).toEqual(['new', 'old']);
+  });
+
+  it('treats an unknown status as lowest priority', () => {
+    const searches = [
+      { id: 'weird', status: 'archived', createdAt: ts(1) },
+      { id: 'done', status: 'complete', createdAt: ts(1) },
+    ];
+    expect(sortSearches(searches).map(s => s.id)).toEqual(['done', 'weird']);
+  });
+
+  it('does not mutate the input array', () => {
+    const searches = [
+      { id: 'c', status: 'complete', createdAt: ts(1) },
+      { id: 'a', status: 'active', createdAt: ts(1) },
+    ];
+    const before = [...searches];
+    sortSearches(searches);
+    expect(searches).toEqual(before);
+  });
+});
 ```
 
-- [ ] **Step 2: Install dependencies**
+- [ ] **Step 2: Run — confirm failure**
 
 ```bash
-cd "C:\Users\Jack\dev\sar-command-track\telegram-bot"
-npm install telegraf@^4.16 firebase-admin@^12
-npm install -D vitest@^1.6
+cd "C:\Users\Jack\dev\sar-command-track\command-center"
+npm test
 ```
+Expected: FAIL — module not found.
 
-- [ ] **Step 3: Create .gitignore**
-
-```
-node_modules/
-.env
-*service-account*.json
-```
-
-- [ ] **Step 4: Create .env.example**
-
-```
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_GROUP_CHAT_ID=
-FIREBASE_SERVICE_ACCOUNT=
-SEARCHER_APP_URL=http://localhost:5174
-```
-
-(`FIREBASE_SERVICE_ACCOUNT` is the entire service-account JSON on one line. `SEARCHER_APP_URL` points at the deployed Searcher PWA once Plan 3 ships; localhost placeholder until then.)
-
-- [ ] **Step 5: Create src/constants.js**
+- [ ] **Step 3: Implement sortSearches.js**
 
 ```javascript
-// Day management arrives in Plan 4; until then the whole system uses one fixed day,
-// matching command-center/src/App.jsx.
-export const DAY_ID = 'day-1';
-```
+// command-center/src/home/sortSearches.js
+const STATUS_ORDER = { active: 0, setup: 1, complete: 2 };
 
-- [ ] **Step 6: Create src/firebase/config.js**
-
-```javascript
-import { initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
-
-if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-  throw new Error('FIREBASE_SERVICE_ACCOUNT env var is required');
+export function sortSearches(searches) {
+  return [...searches].sort((a, b) => {
+    const statusDiff = statusRank(a.status) - statusRank(b.status);
+    if (statusDiff !== 0) return statusDiff;
+    return millis(b.createdAt) - millis(a.createdAt);
+  });
 }
 
-const app = initializeApp({
-  credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
-});
+function statusRank(status) {
+  return STATUS_ORDER[status] ?? 3;
+}
 
-export const db = getFirestore(app);
+function millis(createdAt) {
+  if (!createdAt) return Infinity; // no server timestamp yet — just created, treat as newest
+  return typeof createdAt.toMillis === 'function' ? createdAt.toMillis() : createdAt;
+}
 ```
 
-- [ ] **Step 7: Verify vitest runs (no tests yet)**
+- [ ] **Step 4: Run — confirm pass**
 
 ```bash
 npm test
 ```
-Expected: exits reporting no test files found (that's fine — confirms tooling works).
+Expected: 6 tests pass.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 cd "C:\Users\Jack\dev\sar-command-track"
-git add telegram-bot
-git commit -m "feat(bot): scaffold telegram-bot workspace"
+git add command-center/src/home/sortSearches.js command-center/test/home/sortSearches.test.js
+git commit -m "feat(cc): search list sort order (TDD) — active, then setup, then complete"
 ```
 
 ---

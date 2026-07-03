@@ -38,3 +38,16 @@ CC live view + Complete Search button: built, deployed (commit range 24124e4..)
 Field test PASSED: GPS 1015 pts, live tracks on CC, zone complete works
 PENDING DEPLOY: searcher instant-status fix (committed+pushed, run: firebase deploy --only hosting:searcher)
 NEXT: specs for dashboard (Plan 5) + comms/picker (Plan 6) — decisions in Drive handoff doc
+
+# Plan 5 CC Home Dashboard (subagent-driven, 2026-07-03)
+Task 1: complete (commits 0cd5f37..c32f380, review approved)
+  Minor (deferred to final review): sortSearches comparator returns NaN when two items in one status group both lack createdAt (Infinity - Infinity); no mixed Timestamp/number test case
+Task 2: complete (commits c32f380..ceedaf2, review approved, no deferred findings)
+Task 3: complete (commits ceedaf2..fafd1a8, review approved)
+  Minor (deferred to final review): no hashchange listener (manual URL edits while running don't navigate); deep-link to nonexistent searchId renders silent empty setup view; 'SAR Command' name flash until watchSearch resolves
+Task 4: complete (commits fafd1a8..f7d0797, review approved)
+  Minor (deferred to final review): none blocking; path-as-comment header in SearchRow (matches plan's code blocks)
+Final whole-branch review (fable): NEEDS FIXES -> I1 fixed (79568fe, re-review APPROVED)
+  I1 (Important, fixed): readOnly guard added to handleFeatureDrawn — map draw control could write zones into completed searches
+  M1-M5 + a-e triaged ship-as-is; hashchange listener spun off as follow-up task chip (task_e2436392)
+Plan 5: CODE COMPLETE (commits 0cd5f37..79568fe, 17/17 tests, build+lint clean) — pending: Jack's manual smoke test, then deploy hosting:command-center
