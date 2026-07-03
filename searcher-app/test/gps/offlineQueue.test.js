@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto'; // installs indexedDB + IDBRequest/IDBKeyRange/… globals for idb
 import { describe, it, expect, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
 import { enqueue, pendingEntries, allEntries, markSynced, _resetForTests } from '../../src/gps/offlineQueue.js';
