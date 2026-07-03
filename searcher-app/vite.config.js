@@ -18,6 +18,9 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: '/index.html',
+        // The single JS bundle (mapbox-gl + firebase + turf) is ~3 MiB; it must
+        // still precache or the app shell won't open offline.
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         // Serve cached Mapbox responses (style, tiles, glyphs, sprites) when offline.
         runtimeCaching: [
           {
