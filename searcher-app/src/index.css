@@ -1,0 +1,7 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body { font-family: system-ui, sans-serif; overscroll-behavior: none; }
+input, button { font: inherit; }
+input { border: 1px solid #d1d5db; border-radius: 8px; padding: 10px 12px; width: 100%; }
+button { border: none; border-radius: 8px; padding: 10px 14px; cursor: pointer; background: #1d4ed8; color: #fff; }
+button:disabled { opacity: 0.5; }
