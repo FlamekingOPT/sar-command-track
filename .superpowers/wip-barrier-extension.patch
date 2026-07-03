@@ -1,0 +1,21 @@
+diff --git a/command-center/src/zones/subdivider.js b/command-center/src/zones/subdivider.js
+index 41e4757..358e7a2 100644
+--- a/command-center/src/zones/subdivider.js
++++ b/command-center/src/zones/subdivider.js
+@@ -76,8 +76,15 @@ function cutByBarrier(polygon, line) {
+   try {
+     if (!turf.booleanIntersects(line, polygon)) return [polygon];
+ 
++    // OSM ways are frequently split into short segments at intersections, so a
++    // segment's endpoint often lands inside the polygon instead of past its
++    // edge. Buffering+differencing a line that stops mid-polygon only carves a
++    // dead-end notch (stays a single Polygon) instead of a full split, so
++    // extend both ends past the polygon along their local bearing first.
++    const extended = extendPastPolygon(line, polygon);
++
+     // 10m buffer creates a thin strip along the road — enough for difference to split
+-    const strip = turf.buffer(line, 0.01, { units: 'kilometers' });
++    const strip = turf.buffer(extended, 0.01, { units: 'kilometers' });
+     if (!strip) return [polygon];
+ 
+     const cut = turf.difference(polygon, strip);

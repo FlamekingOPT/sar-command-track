@@ -24,3 +24,9 @@ Task 7: complete (commit 06c337b)
 Task 8: complete (commit 2c1d1ae)
 Task 9: code complete (index.js, 28/28 tests) — live smoke test pending (needs secrets)
 Task 10: Railway deploy — manual, pending
+Task 9 smoke test: PASSED 2026-07-03 (sign-up post, /available assignment + DM verified in "Search bot test" group, id -5444874346; searcher links point at localhost placeholder until Plan 3 deploys)
+Old test searches closed (kept newest active). Bot .env fully configured locally.
+Consolidation: C:\Users\Jack\Desktop\SAR Command recycled; unique WIP saved as .superpowers/wip-barrier-extension.patch (extendPastPolygon never implemented — follow-up task chip created)
+Phase 2: CODE COMPLETE — remaining: Task 10 Railway deploy (after Plan 3 provides real searcher URL)
+
+# Phase 3 Searcher PWA (inline execution)
