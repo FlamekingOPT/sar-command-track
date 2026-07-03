@@ -12,7 +12,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZones = [], subZones = [], osmBarriers = [] }) {
+export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZones = [], subZones = [], osmBarriers = [], tracks = [], liveMarkers = [] }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -77,6 +77,27 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
       map.addLayer({ id: 'osm-waterways', type: 'line', source: 'osm-barriers',
         filter: ['==', ['get', 'barrierType'], 'waterway'],
         paint: { 'line-color': '#60a5fa', 'line-width': 2, 'line-opacity': 0.8 } });
+
+      map.addSource('tracks', { type: 'geojson', data: turf.featureCollection([]) });
+      map.addLayer({ id: 'tracks-line', type: 'line', source: 'tracks',
+        paint: { 'line-color': '#16a34a', 'line-width': 3, 'line-opacity': 0.9 } });
+
+      map.addSource('searcher-positions', { type: 'geojson', data: turf.featureCollection([]) });
+      map.addLayer({ id: 'searcher-positions-dot', type: 'circle', source: 'searcher-positions',
+        paint: { 'circle-radius': 7, 'circle-color': '#16a34a', 'circle-stroke-width': 3, 'circle-stroke-color': '#fff' } });
+
+      map.addSource('live-markers', { type: 'geojson', data: turf.featureCollection([]) });
+      map.addLayer({ id: 'live-markers-dot', type: 'circle', source: 'live-markers',
+        paint: { 'circle-radius': 8, 'circle-color': '#ef4444', 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' } });
+      map.addLayer({ id: 'live-markers-labels', type: 'symbol', source: 'live-markers',
+        layout: {
+          'text-field': ['get', 'note'],
+          'text-size': 11,
+          'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Regular'],
+          'text-anchor': 'top',
+          'text-offset': [0, 0.8],
+        },
+        paint: { 'text-color': '#991b1b', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
     });
 
     map.on('draw.create', e => {
@@ -130,6 +151,30 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
       })))
     );
   }, [subZones]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map?.isStyleLoaded()) return;
+    const lines = tracks
+      .filter(t => t.points?.length >= 2)
+      .map(t => turf.lineString(t.points.map(p => [p.lng, p.lat]), { volunteerId: t.volunteerId }));
+    map.getSource('tracks')?.setData(turf.featureCollection(lines));
+    const positions = tracks
+      .filter(t => t.points?.length >= 1)
+      .map(t => turf.point(
+        [t.points[t.points.length - 1].lng, t.points[t.points.length - 1].lat],
+        { volunteerId: t.volunteerId }
+      ));
+    map.getSource('searcher-positions')?.setData(turf.featureCollection(positions));
+  }, [tracks]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map?.isStyleLoaded()) return;
+    map.getSource('live-markers')?.setData(
+      turf.featureCollection(liveMarkers.map(m => turf.point([m.lng, m.lat], { note: m.note ?? '' })))
+    );
+  }, [liveMarkers]);
 
   return <div ref={containerRef} style={{ flex: 1, height: '100%' }} />;
 }

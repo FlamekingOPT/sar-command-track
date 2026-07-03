@@ -6,7 +6,8 @@ import { CommandMap } from './map/CommandMap';
 import { ZonePanel } from './ui/ZonePanel';
 import { fetchOSMBarriers, subdivideWithBarriers, subdivideZone } from './zones/subdivider';
 import { createZone, updateZoneStatus, watchZones } from './firebase/zones';
-import { updateSearchBoundary, updateSearchLetterZones, publishSearch, watchSearch } from './firebase/searches';
+import { updateSearchBoundary, updateSearchLetterZones, publishSearch, completeSearch, watchSearch } from './firebase/searches';
+import { watchTracks, watchMarkers } from './firebase/live';
 
 const DAY_ID = 'day-1';
 
@@ -22,10 +23,19 @@ export default function App() {
   const [osmBarriers, setOsmBarriers] = useState([]);
   const [letterZones, setLetterZones] = useState([]);
   const [zones, setZones] = useState([]);
+  const [tracks, setTracks] = useState([]);
+  const [liveMarkers, setLiveMarkers] = useState([]);
 
   useEffect(() => {
     if (!searchId) return;
     return watchZones(searchId, DAY_ID, setZones);
+  }, [searchId]);
+
+  useEffect(() => {
+    if (!searchId) return;
+    const stopTracks = watchTracks(searchId, DAY_ID, setTracks);
+    const stopMarkers = watchMarkers(searchId, DAY_ID, setLiveMarkers);
+    return () => { stopTracks(); stopMarkers(); };
   }, [searchId]);
 
   useEffect(() => {
@@ -151,7 +161,26 @@ export default function App() {
         )}
 
         {searchStatus === 'active' && (
-          <span style={{ color: '#22c55e', fontWeight: 700, fontSize: 14 }}>● ACTIVE</span>
+          <>
+            <span style={{ color: '#22c55e', fontWeight: 700, fontSize: 14 }}>● ACTIVE</span>
+            <button
+              onClick={async () => {
+                if (!window.confirm('Complete this search? Volunteers will no longer be able to sign up.')) return;
+                await completeSearch(searchId);
+                setSearchId(null);
+                setSearchStatus('setup');
+                setBoundary(null);
+                setLetterZones([]);
+                setZones([]);
+                setTracks([]);
+                setLiveMarkers([]);
+                setOsmBarriers([]);
+                setDrawMode('idle');
+              }}
+              style={{ background: '#7f1d1d', padding: '4px 12px' }}>
+              ■ Complete Search
+            </button>
+          </>
         )}
 
         <span style={{ flex: 1 }} />
@@ -165,6 +194,8 @@ export default function App() {
           letterZones={letterZones}
           subZones={zones}
           osmBarriers={osmBarriers}
+          tracks={tracks}
+          liveMarkers={liveMarkers}
         />
         <ZonePanel zones={zones} onStatusChange={handleStatusChange} />
       </div>

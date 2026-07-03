@@ -18,6 +18,10 @@ export async function publishSearch(searchId) {
   await updateDoc(doc(db, 'searches', searchId), { status: 'active' });
 }
 
+export async function completeSearch(searchId) {
+  await updateDoc(doc(db, 'searches', searchId), { status: 'complete' });
+}
+
 export async function updateSearchLetterZones(searchId, letterZones) {
   await updateDoc(doc(db, 'searches', searchId), {
     letterZones: letterZones.map(z => ({
