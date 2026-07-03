@@ -2,7 +2,7 @@ import { StatusPill } from './StatusPill';
 
 const ALL_STATUSES = ['unassigned','assigned','in_progress','searched','needs_re_search'];
 
-export function ZonePanel({ zones, onStatusChange }) {
+export function ZonePanel({ zones, volunteers = {}, onStatusChange, readOnly = false }) {
   const byLetter = zones.reduce((acc, z) => {
     (acc[z.letter] ??= []).push(z);
     return acc;
@@ -21,13 +21,15 @@ export function ZonePanel({ zones, onStatusChange }) {
             <div key={zone.id} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
               <span style={{ fontWeight: 700, minWidth: 28 }}>{zone.letter}{zone.number}</span>
               <span style={{ flex: 1, fontSize: 12, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {zone.assignedTo ?? '—'}
+                {zone.assignedTo ? (volunteers[zone.assignedTo] ?? zone.assignedTo) : '—'}
               </span>
               <StatusPill status={zone.status} />
-              <select value={zone.status} onChange={e => onStatusChange(zone.id, e.target.value)}
-                style={{ fontSize: 11, padding: '1px 4px' }}>
-                {ALL_STATUSES.map(s => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
-              </select>
+              {!readOnly && (
+                <select value={zone.status} onChange={e => onStatusChange(zone.id, e.target.value)}
+                  style={{ fontSize: 11, padding: '1px 4px' }}>
+                  {ALL_STATUSES.map(s => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
+                </select>
+              )}
             </div>
           ))}
         </div>

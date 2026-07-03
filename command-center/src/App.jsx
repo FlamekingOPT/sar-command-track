@@ -8,6 +8,7 @@ import { fetchOSMBarriers, subdivideWithBarriers, subdivideZone } from './zones/
 import { createZone, updateZoneStatus, watchZones } from './firebase/zones';
 import { updateSearchBoundary, updateSearchLetterZones, publishSearch, completeSearch, watchSearch } from './firebase/searches';
 import { watchTracks, watchMarkers } from './firebase/live';
+import { watchVolunteers } from './firebase/volunteers';
 
 const DAY_ID = 'day-1';
 
@@ -25,6 +26,9 @@ export default function App() {
   const [zones, setZones] = useState([]);
   const [tracks, setTracks] = useState([]);
   const [liveMarkers, setLiveMarkers] = useState([]);
+  const [volunteers, setVolunteers] = useState({});
+
+  useEffect(() => watchVolunteers(setVolunteers), []);
 
   useEffect(() => {
     if (!searchId) return;
@@ -197,7 +201,7 @@ export default function App() {
           tracks={tracks}
           liveMarkers={liveMarkers}
         />
-        <ZonePanel zones={zones} onStatusChange={handleStatusChange} />
+        <ZonePanel zones={zones} volunteers={volunteers} onStatusChange={handleStatusChange} />
       </div>
     </div>
   );
