@@ -4,6 +4,9 @@ const CONFIG = {
   in_progress:     { label: 'In Progress', color: '#f59e0b' },
   searched:        { label: 'Searched',    color: '#22c55e' },
   needs_re_search: { label: 'Re-search',   color: '#ef4444' },
+  setup:           { label: 'Setup',       color: '#f59e0b' },
+  active:          { label: 'Active',      color: '#22c55e' },
+  complete:        { label: 'Complete',    color: '#6b7280' },
 };
 
 export function StatusPill({ status }) {
