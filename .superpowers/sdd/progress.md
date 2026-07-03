@@ -34,3 +34,7 @@ PWA Tasks 1-9: complete (scaffold 42c0afb .. app d79ef5b, 16/16 tests, build OK)
 PWA Task 2 note: sar-searcher site created via CLI; rules deployed live 2026-07-03
 PWA Task 10: deployed to https://sar-searcher.web.app; bot SEARCHER_APP_URL updated + restarted
 Remaining: real-phone airplane-mode smoke test (Jack), Railway bot deploy (plan 2 Task 10)
+CC live view + Complete Search button: built, deployed (commit range 24124e4..)
+Field test PASSED: GPS 1015 pts, live tracks on CC, zone complete works
+PENDING DEPLOY: searcher instant-status fix (committed+pushed, run: firebase deploy --only hosting:searcher)
+NEXT: specs for dashboard (Plan 5) + comms/picker (Plan 6) — decisions in Drive handoff doc
