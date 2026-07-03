@@ -1,7 +1,16 @@
 {
   "firestore": { "rules": "firestore.rules" },
-  "hosting": {
-    "public": "command-center/dist",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
-  }
+  "hosting": [
+    {
+      "target": "command-center",
+      "public": "command-center/dist",
+      "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
+    },
+    {
+      "target": "searcher",
+      "public": "searcher-app/dist",
+      "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+      "rewrites": [{ "source": "**", "destination": "/index.html" }]
+    }
+  ]
 }

@@ -1,0 +1,11 @@
+{
+  "projects": { "default": "sar-trackhatzolah" },
+  "targets": {
+    "sar-trackhatzolah": {
+      "hosting": {
+        "command-center": ["sar-trackhatzolah"],
+        "searcher": ["sar-searcher"]
+      }
+    }
+  }
+}
