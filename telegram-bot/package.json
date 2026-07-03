@@ -1,0 +1,19 @@
+{
+  "name": "telegram-bot",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --env-file=.env src/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "vitest": "^1.6.1"
+  }
+}

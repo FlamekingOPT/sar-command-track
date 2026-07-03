@@ -1,103 +1,99 @@
-### Task 1: Project Scaffold + Dependencies
+### Task 1: Scaffold telegram-bot Workspace
 
 **Files:**
-- Create: `command-center/package.json`
-- Create: `command-center/vite.config.js`
-- Create: `command-center/index.html`
-- Create: `command-center/.env.example`
-- Create: `command-center/.gitignore`
-- Create: `command-center/.env`  ← populated with real credentials (see below)
+- Create: `telegram-bot/package.json`
+- Create: `telegram-bot/.gitignore`
+- Create: `telegram-bot/.env.example`
+- Create: `telegram-bot/src/constants.js`
+- Create: `telegram-bot/src/firebase/config.js`
 
 **Interfaces:**
-- Produces: dev server at `http://localhost:5173`, `npm test` command
+- Produces: `db` (Admin Firestore instance) exported from `firebase/config.js`; `DAY_ID` from `constants.js`; working `npm test` in `telegram-bot/`
+- Consumed by: every later task
 
-- [ ] **Step 1: Init git at monorepo root**
+- [ ] **Step 1: Create telegram-bot/package.json**
 
-```bash
-cd "C:\Users\Jack\Desktop\SAR Command"
-git init
-```
-
-- [ ] **Step 2: Scaffold Vite + React**
-
-```bash
-npm create vite@latest command-center -- --template react
-cd command-center
-```
-
-- [ ] **Step 3: Install dependencies**
-
-```bash
-npm install firebase@^10 mapbox-gl@^3 "@mapbox/mapbox-gl-draw@^1.4" "@turf/turf@^6"
-npm install -D vitest@^1 jsdom
-```
-
-- [ ] **Step 4: Replace vite.config.js**
-
-```javascript
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-
-export default defineConfig({
-  plugins: [react()],
-  test: { environment: 'node' },
-});
-```
-
-- [ ] **Step 5: Add test script to package.json**
-
-Ensure `scripts` in `command-center/package.json` includes:
 ```json
-"test": "vitest run"
+{
+  "name": "telegram-bot",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --env-file=.env src/index.js",
+    "test": "vitest run"
+  }
+}
 ```
 
-- [ ] **Step 6: Create .env.example**
+- [ ] **Step 2: Install dependencies**
 
-```
-VITE_FIREBASE_API_KEY=
-VITE_FIREBASE_AUTH_DOMAIN=
-VITE_FIREBASE_PROJECT_ID=
-VITE_FIREBASE_STORAGE_BUCKET=
-VITE_FIREBASE_MESSAGING_SENDER_ID=
-VITE_FIREBASE_APP_ID=
-VITE_MAPBOX_TOKEN=
+```bash
+cd "C:\Users\Jack\dev\sar-command-track\telegram-bot"
+npm install telegraf@^4.16 firebase-admin@^12
+npm install -D vitest@^1.6
 ```
 
-- [ ] **Step 7: Create .env with real credentials**
-
-```
-VITE_FIREBASE_API_KEY=AIzaSyBYP0-s6qWvNaqH4uskjy1YUeP8xXVdGc8
-VITE_FIREBASE_AUTH_DOMAIN=sar-trackhatzolah.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=sar-trackhatzolah
-VITE_FIREBASE_STORAGE_BUCKET=sar-trackhatzolah.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=1012419291732
-VITE_FIREBASE_APP_ID=1:1012419291732:web:bb28fa1d91560edcc75bc1
-VITE_MAPBOX_TOKEN=pk.eyJ1IjoiaGF0em9sYWhsYSIsImEiOiJjbXF5M2cxcm0xeWI0MnRxMnRyN2t0emozIn0.q2VcBeQqk2ZpZvOplzklPw
-```
-
-- [ ] **Step 8: Create .gitignore**
+- [ ] **Step 3: Create .gitignore**
 
 ```
 node_modules/
-dist/
 .env
-.env.local
+*service-account*.json
 ```
 
-- [ ] **Step 9: Verify dev server starts**
+- [ ] **Step 4: Create .env.example**
+
+```
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_GROUP_CHAT_ID=
+FIREBASE_SERVICE_ACCOUNT=
+SEARCHER_APP_URL=http://localhost:5174
+```
+
+(`FIREBASE_SERVICE_ACCOUNT` is the entire service-account JSON on one line. `SEARCHER_APP_URL` points at the deployed Searcher PWA once Plan 3 ships; localhost placeholder until then.)
+
+- [ ] **Step 5: Create src/constants.js**
+
+```javascript
+// Day management arrives in Plan 4; until then the whole system uses one fixed day,
+// matching command-center/src/App.jsx.
+export const DAY_ID = 'day-1';
+```
+
+- [ ] **Step 6: Create src/firebase/config.js**
+
+```javascript
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  throw new Error('FIREBASE_SERVICE_ACCOUNT env var is required');
+}
+
+const app = initializeApp({
+  credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
+});
+
+export const db = getFirestore(app);
+```
+
+- [ ] **Step 7: Verify vitest runs (no tests yet)**
 
 ```bash
-cd "C:\Users\Jack\Desktop\SAR Command\command-center"
-npm run dev
+npm test
 ```
-Expected: Vite server running at `http://localhost:5173`. You cannot open a browser — just confirm the process starts without error and outputs the localhost URL, then stop it (Ctrl+C).
+Expected: exits reporting no test files found (that's fine — confirms tooling works).
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-cd "C:\Users\Jack\Desktop\SAR Command"
-git add --all -- ':!command-center/.env'
-git commit -m "feat: scaffold command-center Vite + React project"
+cd "C:\Users\Jack\dev\sar-command-track"
+git add telegram-bot
+git commit -m "feat(bot): scaffold telegram-bot workspace"
 ```
 
-Note: `.env` is gitignored — do NOT commit it. Use `git add --all -- ':!command-center/.env'` to stage everything except the .env file.
+---
+
