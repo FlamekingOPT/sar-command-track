@@ -21,6 +21,8 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [zones, setZones] = useState([]);
   const [tracks, setTracks] = useState([]);
   const [liveMarkers, setLiveMarkers] = useState([]);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [searchCode, setSearchCode] = useState('');
 
   useEffect(() => watchZones(searchId, DAY_ID, setZones), [searchId]);
 
@@ -33,6 +35,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   useEffect(() => {
     return watchSearch(searchId, search => {
       if (search.name) setSearchName(search.name);
+      if (search.code) setSearchCode(search.code);
       if (search.status) setSearchStatus(search.status);
       if (search.boundary) setBoundary(search.boundary);
       if (search.letterZones?.length) {
@@ -117,11 +120,29 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
     onBack();
   }
 
+  function handleCopyPickerLink() {
+    const url = `${import.meta.env.VITE_SEARCHER_APP_URL}/pick/${searchId}`;
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).catch(() => window.prompt('Copy this link:', url));
+    } else {
+      window.prompt('Copy this link:', url);
+    }
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div style={{ display: 'flex', gap: 8, padding: '8px 16px', background: '#1e293b', color: '#f8fafc', alignItems: 'center' }}>
         <button onClick={onBack} style={{ background: 'transparent', padding: '4px 8px' }}>← Searches</button>
         <span style={{ fontWeight: 700, marginRight: 8 }}>{searchName || 'SAR Command'}</span>
+        {searchCode && (
+          <span
+            title="Telegram bind code — send /bind {code} in the group"
+            style={{ fontSize: 12, fontFamily: 'monospace', background: '#334155', color: '#f8fafc', padding: '3px 8px', borderRadius: 4, marginRight: 8 }}>
+            Bind: {searchCode}
+          </span>
+        )}
 
         {/* Step 1: draw boundary */}
         {searchStatus === 'setup' && !boundary && (
@@ -161,6 +182,9 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         {searchStatus === 'active' && (
           <>
             <span style={{ color: '#22c55e', fontWeight: 700, fontSize: 14 }}>● ACTIVE</span>
+            <button onClick={handleCopyPickerLink} style={{ background: '#334155', padding: '4px 12px' }}>
+              {copiedLink ? '✓ Copied' : '🔗 Copy Sign-Up Link'}
+            </button>
             <button onClick={handleComplete} style={{ background: '#7f1d1d', padding: '4px 12px' }}>
               ■ Complete Search
             </button>
