@@ -14,3 +14,11 @@ export function signupMessage(search, letters, includeCode) {
 export function reSearchMessage(zone) {
   return `⚠️ Zone ${zone.letter}${zone.number} needs re-search — reply /available ${zone.letter} to help.`;
 }
+
+export function announcementCaption(search, inviteLink, pickerUrl) {
+  return [
+    `🔍 Search: ${search.name}`,
+    `Join the dedicated group to sign up: ${inviteLink}`,
+    `Or tap a zone on the map: ${pickerUrl}`,
+  ].join('\n');
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { signupMessage, reSearchMessage } from '../src/messages.js';
+import { signupMessage, reSearchMessage, announcementCaption } from '../src/messages.js';
 
 describe('signupMessage', () => {
   const search = { name: 'Main St Search', code: 'X7K2' };
@@ -28,5 +28,18 @@ describe('reSearchMessage', () => {
     const msg = reSearchMessage({ letter: 'A', number: 3 });
     expect(msg).toContain('Zone A3');
     expect(msg).toContain('/available A');
+  });
+});
+
+describe('announcementCaption', () => {
+  it('names the search and includes both links', () => {
+    const msg = announcementCaption(
+      { name: 'Main St Search' },
+      'https://t.me/+abc123',
+      'https://sar-searcher.web.app/pick/s1'
+    );
+    expect(msg).toContain('Main St Search');
+    expect(msg).toContain('https://t.me/+abc123');
+    expect(msg).toContain('https://sar-searcher.web.app/pick/s1');
   });
 });
