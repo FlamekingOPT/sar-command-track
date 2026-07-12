@@ -20,3 +20,7 @@ export async function fetchBindableSearches() {
 export async function bindGroup(searchId, { groupChatId, inviteLink }) {
   await db.doc(`searches/${searchId}`).update({ groupChatId, inviteLink, inviteLinkRevoked: false });
 }
+
+export async function markInviteRevoked(searchId) {
+  await db.doc(`searches/${searchId}`).update({ inviteLinkRevoked: true });
+}
