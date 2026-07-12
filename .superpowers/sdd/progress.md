@@ -51,3 +51,32 @@ Final whole-branch review (fable): NEEDS FIXES -> I1 fixed (79568fe, re-review A
   I1 (Important, fixed): readOnly guard added to handleFeatureDrawn — map draw control could write zones into completed searches
   M1-M5 + a-e triaged ship-as-is; hashchange listener spun off as follow-up task chip (task_e2436392)
 Plan 5: CODE COMPLETE (commits 0cd5f37..79568fe, 17/17 tests, build+lint clean) — pending: Jack's manual smoke test, then deploy hosting:command-center
+
+# Plan 6 Comms Upgrade (subagent-driven, 2026-07-11)
+Task 1: complete (commit ff942f0..5eb28b1, review approved)
+  Deploy deferred: firebase CLI not authenticated on this machine; rule committed, will deploy bundled before Task 15 smoke test
+Task 2: complete (commits 5eb28b1..05af000, review approved)
+Task 3: complete (commits 05af000..c73b4ff, review approved)
+Task 4: complete (commits c73b4ff..176cb4c, review approved)
+  Minor (deferred to final review): no test asserts exact 5-decimal coordinate formatting; hugeCircle test fixture ring is not closed (harmless since simplify is always mocked in these tests)
+Task 5: complete (commits 176cb4c..17a17f7, review approved)
+Task 6: complete (commits 17a17f7..81da315, review approved)
+  Minor (deferred to final review): letters computation runs even on the map-image path where it's unused (small inefficiency, not a duplication issue)
+Task 7: complete (commits 81da315..968604a, review approved; 37/37 tests independently re-confirmed by controller)
+Task 8: complete (commits 968604a..5777178, review approved)
+Bot-side work (Tasks 1-8) COMPLETE. Moving to searcher-app (Tasks 9-14).
+Task 9: complete (commits 5777178..e1e965e, review approved)
+Task 10: complete (commits e1e965e..23f10c4, review approved; geometry-parsing consistency with command-center's watchSearch confirmed by controller during plan authoring)
+Task 11: complete (commits 23f10c4..4ebf7a8, review approved)
+Task 12: complete (commits 4ebf7a8..7f11dd7, review approved)
+Task 13: complete (commits 7f11dd7..c107c47, review approved)
+Task 14: complete (commits c107c47..ae4f307, review approved)
+  Minor (deferred to final review, both inherited verbatim from plan's prescribed code, not implementer deviations): Object.entries(...).sort() relies on default string-coercion sort (happens to work for single-char letter keys); useMemo(getIdentity, []) treated as a once-only guarantee (harmless since getIdentity is idempotent)
+All 14 code tasks COMPLETE. Only Task 15 (manual smoke test, needs Jack) and final whole-branch review remain.
+Final whole-branch review (opus): WITH FIXES -> I1 fixed (774d0be, verified by controller: diff matches reviewer's exact recommendation, 37/37 tests incl. bind.test.js 3/3)
+  I1 (Important, fixed): bind.js used ** (double-asterisk) bold with legacy Markdown parse_mode, which Telegram rejects (400 can't parse entities) -- bind succeeded but confirmation reply silently failed. Fixed: dropped parse_mode entirely, plain text (matches rest of bot).
+  M1 (deferred, ship-as-is): zoneRequestWatcher crash between assignZone and resolveRequest could double-assign on bot restart (narrow window, staff can reassign, no transactions is an existing convention)
+  M2 (deferred, ship-as-is): PickPage re-prompts for name after a no_availability response (identity read once via useMemo at mount; saveName's write isn't reflected until remount) -- one extra tap, not a data bug
+  Deferred findings from Tasks 4/6/14 (mapImage decimal-format test coverage, unclosed test fixture ring, searchWatcher's unused letters computation on the map-image path, PickPage's default-sort/useMemo-once patterns): all triaged ship-as-is by final reviewer
+  IMPORTANT SMOKE-TEST NOTE for Task 15: the rich map-image announcement only fires if the search is bound (groupChatId+inviteLink set) BEFORE it's published (searchWatcher's announcedAt guard means binding after publish does NOT retroactively re-announce -- this is correct/intended per spec, not a bug). When running Task 15, bind the group WHILE the search is still in 'setup', before clicking Publish, or you'll only see the plain-text announcement and think something is broken.
+Plan 6 CODE COMPLETE (commits ff942f0..774d0be, 37/37 tests, builds clean) -- pending: Task 1's firebase deploy --only firestore:rules (deferred, needs firebase login), Jack's Task 15 manual smoke test (needs bot .env fully configured + real Telegram group + phone)

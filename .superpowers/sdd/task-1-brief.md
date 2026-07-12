@@ -1,123 +1,75 @@
-### Task 1: Search List Sort Order (TDD)
+### Task 1: Firestore Rules — `zoneRequests` Collection
 
 **Files:**
-- Create: `command-center/src/home/sortSearches.js`
-- Test: `command-center/test/home/sortSearches.test.js`
+- Modify: `firestore.rules`
 
 **Interfaces:**
-- Produces: `sortSearches(searches: Array<{ id, status, createdAt }>): Array<search>` — pure, does not mutate its input. Sort key: `status` priority (`active` → `setup` → `complete` → anything else last), then `createdAt` descending within a status group. A `createdAt` of `null`/`undefined` (a doc whose `serverTimestamp()` hasn't resolved yet) sorts as the newest.
-- Consumed by: Task 3 (`HomeDashboard`)
+- Produces: a `zoneRequests` collection where anyone can read/create, only the bot (Admin SDK, bypasses rules) can update.
+- Consumed by: Task 7 (bot watcher writes), Task 13 (searcher-app reads/creates).
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Add the rule block**
 
-```javascript
-// command-center/test/home/sortSearches.test.js
-import { describe, it, expect } from 'vitest';
-import { sortSearches } from '../../src/home/sortSearches.js';
+Open `firestore.rules`. Add this block as a new top-level `match`, alongside the existing `volunteers` and `searcherLinks` blocks (not nested under `searches`):
 
-function ts(ms) {
-  return { toMillis: () => ms }; // mimics a Firestore Timestamp
-}
-
-describe('sortSearches', () => {
-  it('orders active before setup before complete', () => {
-    const searches = [
-      { id: 'c', status: 'complete', createdAt: ts(1) },
-      { id: 'a', status: 'active', createdAt: ts(1) },
-      { id: 's', status: 'setup', createdAt: ts(1) },
-    ];
-    expect(sortSearches(searches).map(s => s.id)).toEqual(['a', 's', 'c']);
-  });
-
-  it('orders newer createdAt first within the same status', () => {
-    const searches = [
-      { id: 'old', status: 'active', createdAt: ts(100) },
-      { id: 'new', status: 'active', createdAt: ts(200) },
-    ];
-    expect(sortSearches(searches).map(s => s.id)).toEqual(['new', 'old']);
-  });
-
-  it('treats a missing createdAt as the most recent', () => {
-    const searches = [
-      { id: 'has-timestamp', status: 'active', createdAt: ts(999999) },
-      { id: 'just-created', status: 'active', createdAt: null },
-    ];
-    expect(sortSearches(searches).map(s => s.id)).toEqual(['just-created', 'has-timestamp']);
-  });
-
-  it('accepts plain millisecond numbers for createdAt', () => {
-    const searches = [
-      { id: 'old', status: 'setup', createdAt: 100 },
-      { id: 'new', status: 'setup', createdAt: 200 },
-    ];
-    expect(sortSearches(searches).map(s => s.id)).toEqual(['new', 'old']);
-  });
-
-  it('treats an unknown status as lowest priority', () => {
-    const searches = [
-      { id: 'weird', status: 'archived', createdAt: ts(1) },
-      { id: 'done', status: 'complete', createdAt: ts(1) },
-    ];
-    expect(sortSearches(searches).map(s => s.id)).toEqual(['done', 'weird']);
-  });
-
-  it('does not mutate the input array', () => {
-    const searches = [
-      { id: 'c', status: 'complete', createdAt: ts(1) },
-      { id: 'a', status: 'active', createdAt: ts(1) },
-    ];
-    const before = [...searches];
-    sortSearches(searches);
-    expect(searches).toEqual(before);
-  });
-});
+```
+    match /zoneRequests/{requestId} {
+      allow read: if true;    // the picker page polls its own request doc
+      allow create: if true;  // open trust model, same as tracks/markers today
+      allow update: if false; // only the bot (Admin SDK, bypasses rules) resolves a request
+    }
 ```
 
-- [ ] **Step 2: Run — confirm failure**
+The full file should now read:
+
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /volunteers/{id} {
+      allow read, write: if true;
+    }
+    match /searcherLinks/{token} {
+      allow read: if true;   // the app resolves tokens client-side
+      allow write: if false; // written only by the bot via Admin SDK (bypasses rules)
+    }
+    match /zoneRequests/{requestId} {
+      allow read: if true;    // the picker page polls its own request doc
+      allow create: if true;  // open trust model, same as tracks/markers today
+      allow update: if false; // only the bot (Admin SDK, bypasses rules) resolves a request
+    }
+    match /searches/{searchId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+      match /days/{dayId}/zones/{zoneId} {
+        allow read: if true;
+        allow update: if request.auth != null
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+        allow create, delete: if request.auth != null;
+      }
+      match /days/{dayId}/tracks/{volunteerId} {
+        allow read: if request.auth != null;
+        allow create, update: if true;
+      }
+      match /days/{dayId}/markers/{markerId} {
+        allow read: if true;
+        allow create: if true;
+        allow update: if request.auth != null;
+      }
+    }
+  }
+}
+```
+
+- [ ] **Step 2: Deploy the rule**
+
+Run: `firebase deploy --only firestore:rules`
+Expected: `✔ Deploy complete!` — if this fails with an auth error, run `firebase login` first.
+
+- [ ] **Step 3: Commit**
 
 ```bash
-cd "C:\Users\Jack\dev\sar-command-track\command-center"
-npm test
-```
-Expected: FAIL — module not found.
-
-- [ ] **Step 3: Implement sortSearches.js**
-
-```javascript
-// command-center/src/home/sortSearches.js
-const STATUS_ORDER = { active: 0, setup: 1, complete: 2 };
-
-export function sortSearches(searches) {
-  return [...searches].sort((a, b) => {
-    const statusDiff = statusRank(a.status) - statusRank(b.status);
-    if (statusDiff !== 0) return statusDiff;
-    return millis(b.createdAt) - millis(a.createdAt);
-  });
-}
-
-function statusRank(status) {
-  return STATUS_ORDER[status] ?? 3;
-}
-
-function millis(createdAt) {
-  if (!createdAt) return Infinity; // no server timestamp yet — just created, treat as newest
-  return typeof createdAt.toMillis === 'function' ? createdAt.toMillis() : createdAt;
-}
-```
-
-- [ ] **Step 4: Run — confirm pass**
-
-```bash
-npm test
-```
-Expected: 6 tests pass.
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd "C:\Users\Jack\dev\sar-command-track"
-git add command-center/src/home/sortSearches.js command-center/test/home/sortSearches.test.js
-git commit -m "feat(cc): search list sort order (TDD) — active, then setup, then complete"
+git add firestore.rules
+git commit -m "feat: firestore rule for zoneRequests collection"
 ```
 
 ---
