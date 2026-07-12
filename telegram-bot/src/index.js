@@ -1,6 +1,7 @@
 import { Telegraf } from 'telegraf';
 import { registerHandler } from './commands/register.js';
 import { availableHandler } from './commands/available.js';
+import { bindHandler } from './commands/bind.js';
 import { watchSearches } from './watchers/searchWatcher.js';
 import { watchZoneChanges } from './watchers/zoneWatcher.js';
 
@@ -22,6 +23,7 @@ bot.use((ctx, next) => {
 
 bot.command('register', registerHandler());
 bot.command('available', availableHandler());
+bot.command('bind', bindHandler());
 
 bot.catch(err => console.error('bot error:', err));
 

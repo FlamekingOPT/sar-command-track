@@ -11,3 +11,12 @@ export async function fetchActiveSearches() {
 export async function markAnnounced(searchId) {
   await db.doc(`searches/${searchId}`).update({ announcedAt: FieldValue.serverTimestamp() });
 }
+
+export async function fetchBindableSearches() {
+  const snap = await db.collection('searches').where('status', 'in', ['setup', 'active']).get();
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+export async function bindGroup(searchId, { groupChatId, inviteLink }) {
+  await db.doc(`searches/${searchId}`).update({ groupChatId, inviteLink, inviteLinkRevoked: false });
+}
