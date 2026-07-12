@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'; // installs indexedDB + IDBRequest/IDBKeyRange/… globals for idb
 import { describe, it, expect, beforeEach } from 'vitest';
 import { IDBFactory } from 'fake-indexeddb';
-import { enqueue, pendingEntries, allEntries, markSynced, _resetForTests } from '../../src/gps/offlineQueue.js';
+import { enqueue, pendingEntries, allEntries, markSynced, linkKeyOf, _resetForTests } from '../../src/gps/offlineQueue.js';
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory(); // fresh DB per test
@@ -39,5 +39,22 @@ describe('offlineQueue', () => {
     await enqueue('status', { status: 'searched' });
     await markSynced([9999]);
     expect(await pendingEntries()).toHaveLength(1);
+  });
+
+  it('stamps entries with a link key and scopes them per assignment', async () => {
+    const keyA = linkKeyOf({ searchId: 's1', dayId: 'day-1', zoneId: 'zA', volunteerId: 'v1' });
+    const keyB = linkKeyOf({ searchId: 's2', dayId: 'day-1', zoneId: 'zB', volunteerId: 'v1' });
+    expect(keyA).not.toBe(keyB);
+
+    await enqueue('trackPoint', { timestamp: 1 }, keyA);
+    await enqueue('trackPoint', { timestamp: 2 }, keyB);
+
+    const forB = (await pendingEntries()).filter(e => e.linkKey === keyB);
+    expect(forB).toHaveLength(1);
+    expect(forB[0].payload.timestamp).toBe(2);
+  });
+
+  it('linkKeyOf returns null without a context', () => {
+    expect(linkKeyOf(null)).toBe(null);
   });
 });

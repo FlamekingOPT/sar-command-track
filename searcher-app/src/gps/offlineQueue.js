@@ -12,9 +12,16 @@ function queueDb() {
   return dbPromise;
 }
 
-export async function enqueue(type, payload) {
+// Stable identity for one zone assignment. Queue entries are stamped with it so
+// track points / markers / status from a PREVIOUS search on this device never
+// replay onto — or sync into — the current zone (they share one IndexedDB store).
+export function linkKeyOf(ctx) {
+  return ctx ? `${ctx.searchId}/${ctx.dayId}/${ctx.zoneId}/${ctx.volunteerId}` : null;
+}
+
+export async function enqueue(type, payload, linkKey = null) {
   const db = await queueDb();
-  return db.add('queue', { type, payload, synced: 0, createdAt: Date.now() });
+  return db.add('queue', { type, payload, linkKey, synced: 0, createdAt: Date.now() });
 }
 
 export async function pendingEntries() {

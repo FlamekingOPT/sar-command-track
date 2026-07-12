@@ -1,11 +1,14 @@
-import { pendingEntries, markSynced } from './offlineQueue';
+import { pendingEntries, markSynced, linkKeyOf } from './offlineQueue';
 import { appendTrackPoints } from '../firebase/tracks';
 import { createMarker } from '../firebase/markers';
 import { updateZoneStatus } from '../firebase/zones';
 
 // Entries that fail stay queued and retry on the next tick (spec §4).
 export async function flushOnce(linkCtx) {
-  const entries = await pendingEntries();
+  const key = linkKeyOf(linkCtx);
+  // Only sync entries belonging to THIS assignment. Stale entries from a prior
+  // search stay inert rather than corrupting the current zone's track doc.
+  const entries = (await pendingEntries()).filter(e => e.linkKey === key);
   if (!entries.length) return 0;
   const done = [];
 
