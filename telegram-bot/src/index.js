@@ -5,7 +5,7 @@ import { bindHandler } from './commands/bind.js';
 import { watchSearches } from './watchers/searchWatcher.js';
 import { watchZoneChanges } from './watchers/zoneWatcher.js';
 
-for (const key of ['TELEGRAM_BOT_TOKEN', 'FIREBASE_SERVICE_ACCOUNT', 'SEARCHER_APP_URL']) {
+for (const key of ['TELEGRAM_BOT_TOKEN', 'FIREBASE_SERVICE_ACCOUNT', 'SEARCHER_APP_URL', 'MAPBOX_TOKEN']) {
   if (!process.env[key]) throw new Error(`${key} env var is required`);
 }
 
