@@ -283,13 +283,20 @@ before — someone just looking at the map without tapping shouldn't be interrup
    live `watchZones`-style subscription to the search's sub-zones (searcher-app already has
    `firebase/zones.js` reading a single zone by ref; extend with a collection-level watch
    scoped to `searchId`/`DAY_ID`, mirroring the Command Center's `watchZones`).
-2. Render each **letter zone** (not sub-zones) colored by availability, computed by
-   aggregating that letter's sub-zone statuses — matching what's actually implemented today,
-   not the original design doc's aspirational per-letter locking (never built — `pickZone`
-   accepts a `lockedLetters` set but nothing populates it, confirmed in the running code):
-   - **Available** (green) — at least one sub-zone `unassigned` or `needs_re_search`.
-   - **Full** (gray) — every sub-zone `assigned`, `in_progress`, or `searched`.
-3. Tap an available letter → if no name saved yet, show a one-time inline name prompt → on
+2. Render each **letter zone** (not sub-zones) as an actual interactive Mapbox map — a
+   `PickMap` component mirroring the existing `SearcherMap`/`CommandMap` pattern (Mapbox GL,
+   a GeoJSON source/layer for the letter-zone polygons, `map.fitBounds` to the zones' combined
+   bbox) — not a plain list or grid of buttons. Each zone polygon is colored by availability,
+   computed by aggregating that letter's sub-zone statuses — matching what's actually
+   implemented today, not the original design doc's aspirational per-letter locking (never
+   built — `pickZone` accepts a `lockedLetters` set but nothing populates it, confirmed in the
+   running code):
+   - **Available** (green fill) — at least one sub-zone `unassigned` or `needs_re_search`.
+   - **Full** (gray fill) — every sub-zone `assigned`, `in_progress`, or `searched`.
+   Tapping directly on a zone's polygon on the map (a Mapbox `click` event on the fill layer,
+   reading the tapped feature's `letter` property) is the selection mechanism — there is no
+   separate button UI standing in for the map.
+3. Tap an available zone's polygon on the map → if no name saved yet, show a one-time inline name prompt → on
    submit (or immediately, if a name is already saved), write a `zoneRequests` doc:
    `{ searchId, letter, webVolunteerId: id, name, status: 'pending', createdAt }`.
 4. Show a "Finding your zone…" waiting state; `watchRequest(requestId)` listens for the
