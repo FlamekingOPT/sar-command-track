@@ -8,6 +8,8 @@ import { useGpsTracking } from './gps/useGpsTracking';
 import { SearcherMap } from './map/SearcherMap';
 import { StatusButton } from './ui/StatusButton';
 import { MarkerForm } from './ui/MarkerForm';
+import { parseSearchId } from './pick/pickToken';
+import { PickPage } from './pick/PickPage';
 
 function Message({ children }) {
   return (
@@ -18,6 +20,9 @@ function Message({ children }) {
 }
 
 export default function App() {
+  const searchId = parseSearchId(window.location.pathname);
+  if (searchId) return <PickPage searchId={searchId} />;
+
   const [state, setState] = useState('loading'); // loading | invalid | ready
   const [link, setLink] = useState(null);        // { searchId, dayId, zoneId, volunteerId }
   const [zone, setZone] = useState(null);
