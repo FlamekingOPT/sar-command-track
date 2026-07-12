@@ -3,6 +3,7 @@ import { getSearch } from '../firebase/searches';
 import { watchZones } from '../firebase/zones';
 import { createRequest, watchRequest } from '../firebase/zoneRequests';
 import { getIdentity, saveName, getSavedRequest, saveRequest } from './identity';
+import { PickMap } from './PickMap';
 
 // Day management arrives in Plan 4; until then the whole system uses one fixed day.
 const DAY_ID = 'day-1';
@@ -27,6 +28,7 @@ export function PickPage({ searchId }) {
   const [nameInput, setNameInput] = useState('');
   const [requestId, setRequestId] = useState(() => getSavedRequest(searchId));
   const [requestStatus, setRequestStatus] = useState(null);
+  const [requestError, setRequestError] = useState(null);
   const identity = useMemo(getIdentity, []);
 
   useEffect(() => { getSearch(searchId).then(setSearch); }, [searchId]);
@@ -50,10 +52,15 @@ export function PickPage({ searchId }) {
   const availability = letterAvailability(zones);
 
   async function submitRequest(letter, name) {
-    const id = await createRequest({ searchId: search.id, letter, webVolunteerId: identity.id, name });
-    saveRequest(search.id, id);
-    setRequestId(id);
-    setRequestStatus('pending');
+    setRequestError(null);
+    try {
+      const id = await createRequest({ searchId: search.id, letter, webVolunteerId: identity.id, name });
+      saveRequest(search.id, id);
+      setRequestId(id);
+      setRequestStatus('pending');
+    } catch {
+      setRequestError("Something went wrong claiming that zone — try again.");
+    }
   }
 
   function handleTapLetter(letter) {
@@ -75,33 +82,35 @@ export function PickPage({ searchId }) {
   }
 
   return (
-    <div style={{ padding: 24 }}>
-      <h1 style={{ fontSize: 20, marginBottom: 4 }}>{search.name}</h1>
-      <p style={{ color: '#6b7280', marginBottom: 20 }}>Tap an available zone to join the search.</p>
+    <div style={{ position: 'relative', height: '100%' }}>
+      <PickMap letterZones={search.letterZones} availability={availability} onZoneClick={handleTapLetter} />
 
-      {requestStatus === 'no_availability' && (
-        <p style={{ color: '#b91c1c', marginBottom: 12 }}>That zone just filled up — try another.</p>
-      )}
+      <div style={{
+        position: 'fixed', top: 12, left: 12, right: 12, zIndex: 10,
+        background: 'rgba(30,41,59,0.92)', color: '#f8fafc',
+        borderRadius: 10, padding: '10px 14px', fontWeight: 700, textAlign: 'center',
+      }}>
+        {search.name}
+        <div style={{ fontWeight: 400, fontSize: 13, marginTop: 4 }}>
+          Tap an available zone to join the search.
+        </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-        {Object.entries(availability).sort().map(([letter, status]) => (
-          <button
-            key={letter}
-            onClick={() => handleTapLetter(letter)}
-            disabled={status !== 'available'}
-            style={{
-              width: 56, height: 56, fontSize: 22, fontWeight: 700,
-              background: status === 'available' ? '#22c55e' : '#9ca3af',
-            }}
-          >
-            {letter}
-          </button>
-        ))}
+        {requestStatus === 'no_availability' && (
+          <div style={{ fontWeight: 400, fontSize: 13, marginTop: 6, color: '#fca5a5' }}>
+            That zone just filled up — try another.
+          </div>
+        )}
+
+        {requestError && (
+          <div style={{ fontWeight: 400, fontSize: 13, marginTop: 6, color: '#fca5a5' }}>
+            {requestError}
+          </div>
+        )}
       </div>
 
       {pendingLetter && (
         <form onSubmit={handleNameSubmit} style={{
-          position: 'fixed', bottom: 16, left: 16, right: 16,
+          position: 'fixed', bottom: 16, left: 16, right: 16, zIndex: 10,
           background: '#fff', borderRadius: 12, padding: 16,
           boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
         }}>
