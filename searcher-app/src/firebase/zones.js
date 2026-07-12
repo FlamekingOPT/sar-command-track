@@ -1,4 +1,4 @@
-import { doc, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { doc, collection, getDoc, updateDoc, onSnapshot } from 'firebase/firestore';
 import { db } from './config';
 
 const zoneDoc = ({ searchId, dayId, zoneId }) =>
@@ -26,4 +26,9 @@ export function watchZone(ref, cb) {
 
 export async function updateZoneStatus({ searchId, dayId, zoneId, status }) {
   await updateDoc(zoneDoc({ searchId, dayId, zoneId }), { status });
+}
+
+export function watchZones(searchId, dayId, cb) {
+  const zonesCol = collection(db, 'searches', searchId, 'days', dayId, 'zones');
+  return onSnapshot(zonesCol, snap => cb(snap.docs.map(parseZone)));
 }
