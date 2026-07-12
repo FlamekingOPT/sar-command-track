@@ -23,7 +23,7 @@ export function registerHandler() {
       return;
     }
 
-    await saveVolunteer({ telegramId, name });
+    await saveVolunteer({ id: telegramId, name, telegramId });
     await ctx.reply(`Registered as ${name}. When a search goes out, reply /available with the zone letters you can search (e.g. /available A B).`);
   };
 }
