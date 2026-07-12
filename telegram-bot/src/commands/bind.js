@@ -36,6 +36,6 @@ export function bindHandler() {
     }
 
     await bindGroup(search.id, { groupChatId: String(ctx.chat.id), inviteLink });
-    await ctx.reply(`Bound to **${search.name}**. Sign-ups happen here from now on.`, { parse_mode: 'Markdown' });
+    await ctx.reply(`Bound to ${search.name}. Sign-ups happen here from now on.`);
   };
 }
