@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import * as turf from '@turf/turf';
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -12,8 +12,12 @@ const FULL_COLOR = '#9ca3af';
 export function PickMap({ letterZones, availability, onZoneClick }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
-  const loadedRef = useRef(false);
   const onZoneClickRef = useRef(onZoneClick);
+  // State (not a ref) so the source-update effect below re-runs once the map
+  // finishes loading — a ref mutation inside `map.on('load', ...)` wouldn't
+  // re-trigger that effect, so if Firestore data arrives before the map does
+  // (the common case), the zone layer would otherwise stay empty forever.
+  const [mapLoaded, setMapLoaded] = useState(false);
   useEffect(() => { onZoneClickRef.current = onZoneClick; }, [onZoneClick]);
 
   useEffect(() => {
@@ -51,16 +55,16 @@ export function PickMap({ letterZones, availability, onZoneClick }) {
       map.on('mouseenter', 'zones-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', 'zones-fill', () => { map.getCanvas().style.cursor = ''; });
 
-      loadedRef.current = true;
+      setMapLoaded(true);
     });
 
     mapRef.current = map;
-    return () => { loadedRef.current = false; map.remove(); };
+    return () => { setMapLoaded(false); map.remove(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !loadedRef.current) return;
+    if (!map || !mapLoaded) return;
     map.getSource('zones')?.setData(
       turf.featureCollection(
         letterZones.filter(z => z.geometry).map(z => ({
@@ -73,7 +77,7 @@ export function PickMap({ letterZones, availability, onZoneClick }) {
         }))
       )
     );
-  }, [letterZones, availability]);
+  }, [letterZones, availability, mapLoaded]);
 
   return <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />;
 }
