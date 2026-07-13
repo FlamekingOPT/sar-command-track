@@ -6,12 +6,15 @@ service cloud.firestore {
     }
     match /searcherLinks/{token} {
       allow read: if true;   // the app resolves tokens client-side
-      allow write: if false; // written only by the bot via Admin SDK (bypasses rules)
+      allow create: if true; // web picker claims a zone + writes its own link (open trust model)
+      allow update: if false; // deactivation stays bot-only via Admin SDK
+      allow delete: if request.auth != null; // admin clearing out an old search
     }
     match /zoneRequests/{requestId} {
       allow read: if true;    // the picker page polls its own request doc
       allow create: if true;  // open trust model, same as tracks/markers today
       allow update: if false; // only the bot (Admin SDK, bypasses rules) resolves a request
+      allow delete: if request.auth != null; // admin clearing out an old search
     }
     match /searches/{searchId} {
       allow read: if true;
@@ -19,17 +22,24 @@ service cloud.firestore {
       match /days/{dayId}/zones/{zoneId} {
         allow read: if true;
         allow update: if request.auth != null
-          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']);
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+          // Web picker claiming an open zone: only status+assignedTo change,
+          // and only from an assignable state to 'assigned' (open trust model).
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'assignedTo'])
+              && resource.data.status in ['unassigned', 'needs_re_search']
+              && request.resource.data.status == 'assigned');
         allow create, delete: if request.auth != null;
       }
       match /days/{dayId}/tracks/{volunteerId} {
         allow read: if request.auth != null;
         allow create, update: if true;
+        allow delete: if request.auth != null; // admin clearing out an old search
       }
       match /days/{dayId}/markers/{markerId} {
         allow read: if true;
         allow create: if true;
         allow update: if request.auth != null;
+        allow delete: if request.auth != null; // admin clearing out an old search
       }
     }
   }

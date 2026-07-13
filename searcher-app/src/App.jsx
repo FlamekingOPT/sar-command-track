@@ -31,7 +31,10 @@ export default function App() {
   const startedRef = useRef(false);
 
   const linkKey = linkKeyOf(link);
-  const { points, error: gpsError, retry } = useGpsTracking(state === 'ready', linkKey);
+  // Stops (and auto-resumes on reopen) with live zone.status, not just the local
+  // Complete tap — a command-center-driven status change stops tracking too.
+  const tracking = state === 'ready' && zone?.status !== 'searched';
+  const { points, error: gpsError, retry } = useGpsTracking(tracking, linkKey);
 
   // Resolve token → link → zone
   useEffect(() => {
