@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone, subdivideWithBarriers } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers, gridSubdivide } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -79,5 +79,50 @@ describe('subdivideWithBarriers', () => {
     const smallShare = Math.min(...zones.map(z => turf.area(z))) / turf.area(SQUARE);
     expect(smallShare).toBeGreaterThan(0.1);
     expect(smallShare).toBeLessThan(0.4);
+  });
+});
+
+const IRREGULAR = turf.polygon([[
+  [-118.30, 34.02], [-118.25, 34.10], [-118.15, 34.12], [-118.10, 34.05],
+  [-118.18, 34.00], [-118.30, 34.02],
+]]);
+
+describe('gridSubdivide', () => {
+  it('returns the original polygon unchanged when n <= 1', () => {
+    const result = gridSubdivide(SQUARE, 1);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(SQUARE);
+  });
+
+  it('produces exactly n cells for a simple square', () => {
+    const result = gridSubdivide(SQUARE, 4);
+    expect(result).toHaveLength(4);
+  });
+
+  it('covers ~100% of the original area (never drops a sliver)', () => {
+    const result = gridSubdivide(SQUARE, 4);
+    const subArea = result.reduce((sum, z) => sum + turf.area(z), 0);
+    expect(subArea / turf.area(SQUARE)).toBeGreaterThan(0.99);
+  });
+
+  it('covers ~100% of an irregular/concave polygon too', () => {
+    const result = gridSubdivide(IRREGULAR, 7);
+    expect(result).toHaveLength(7);
+    const subArea = result.reduce((sum, z) => sum + turf.area(z), 0);
+    expect(subArea / turf.area(IRREGULAR)).toBeGreaterThan(0.99);
+  });
+
+  it('never leaves a cell under 15% of the target per-cell area (no orphaned slivers)', () => {
+    const result = gridSubdivide(IRREGULAR, 10);
+    const target = turf.area(IRREGULAR) / 10;
+    for (const cell of result) {
+      expect(turf.area(cell)).toBeGreaterThanOrEqual(target * 0.15);
+    }
+  });
+
+  it('all cell centroids are inside the original polygon', () => {
+    for (const cell of gridSubdivide(SQUARE, 6)) {
+      expect(turf.booleanPointInPolygon(turf.centroid(cell), SQUARE)).toBe(true);
+    }
   });
 });

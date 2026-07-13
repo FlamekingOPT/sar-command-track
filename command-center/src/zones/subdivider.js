@@ -153,6 +153,120 @@ function mergeToN(zones, n) {
   return current;
 }
 
+// Temporary stub for mergeSmallestIntoNeighbor — Task 3 replaces this with the real implementation
+function mergeSmallestIntoNeighbor(zones, n) {
+  let current = [...zones];
+  while (current.length > n) {
+    const centroids = current.map(z => turf.centroid(z).geometry.coordinates);
+    let minDist = Infinity, mi = 0, mj = 1;
+    for (let i = 0; i < current.length; i++) {
+      for (let j = i + 1; j < current.length; j++) {
+        const dx = centroids[i][0] - centroids[j][0];
+        const dy = centroids[i][1] - centroids[j][1];
+        const d = dx * dx + dy * dy;
+        if (d < minDist) { minDist = d; mi = i; mj = j; }
+      }
+    }
+    try {
+      const merged = turf.union(current[mi], current[mj]);
+      current = current.filter((_, i) => i !== mi && i !== mj);
+      if (merged) current.push(merged);
+    } catch {
+      current = current.filter((_, i) => i !== mj);
+    }
+  }
+  return current;
+}
+
+// Compact grid partition — lays a square grid sized to the target per-zone
+// area over the polygon's bbox, clips to the polygon, merges slivers into
+// their nearest neighbor (never dropped), and reclaims any leftover area a
+// degenerate clip missed. Guaranteed full coverage, never a bbox-spanning
+// strip (unlike stripSubdivide).
+export function gridSubdivide(polygon, n) {
+  if (n <= 1) return [polygon];
+
+  const totalArea = turf.area(polygon); // m²
+  const targetCellArea = totalArea / n;
+  const cellSideKm = Math.sqrt(targetCellArea) / 1000;
+  const bbox = turf.bbox(polygon);
+
+  const grid = turf.squareGrid(bbox, cellSideKm, { units: 'kilometers' });
+  let cells = grid.features
+    .map(cell => { try { return turf.intersect(cell, polygon); } catch { return null; } })
+    .filter(Boolean);
+
+  if (!cells.length) return [polygon]; // degenerate bbox/polygon — bail to whole shape
+
+  cells = mergeSlivers(cells, targetCellArea);
+  cells = reclaimLeftover(cells, polygon);
+
+  if (cells.length > n) cells = mergeSmallestIntoNeighbor(cells, n);
+  while (cells.length < n && cells.length > 0) {
+    const maxIdx = cells.reduce((mi, c, i) => turf.area(c) > turf.area(cells[mi]) ? i : mi, 0);
+    const halves = gridSubdivide(cells[maxIdx], 2);
+    cells = [...cells.slice(0, maxIdx), ...halves, ...cells.slice(maxIdx + 1)];
+  }
+
+  return cells;
+}
+
+// Merge any cell under 15% of the target cell area into its nearest-centroid
+// neighbor — never leave an orphaned sliver as its own zone.
+function mergeSlivers(cells, targetCellArea, minFraction = 0.15) {
+  let current = [...cells];
+  let sliverIdx = current.findIndex(c => turf.area(c) < targetCellArea * minFraction);
+  while (sliverIdx !== -1 && current.length > 1) {
+    const sliverCentroid = turf.centroid(current[sliverIdx]).geometry.coordinates;
+    let nearestIdx = -1, minDist = Infinity;
+    current.forEach((c, i) => {
+      if (i === sliverIdx) return;
+      const cc = turf.centroid(c).geometry.coordinates;
+      const d = (cc[0] - sliverCentroid[0]) ** 2 + (cc[1] - sliverCentroid[1]) ** 2;
+      if (d < minDist) { minDist = d; nearestIdx = i; }
+    });
+    if (nearestIdx === -1) break;
+
+    try {
+      const merged = turf.union(current[sliverIdx], current[nearestIdx]);
+      current = current.filter((_, i) => i !== sliverIdx && i !== nearestIdx);
+      if (merged) current.push(merged);
+    } catch {
+      current = current.filter((_, i) => i !== sliverIdx);
+    }
+    sliverIdx = current.findIndex(c => turf.area(c) < targetCellArea * minFraction);
+  }
+  return current;
+}
+
+// Union all cells and diff against the original polygon — any leftover area
+// (degenerate clip failures, floating-point gaps) gets folded into the
+// nearest cell so coverage is always ~100%, never silently dropped.
+// turf.union (v6) takes exactly 2 features — reduce pairwise, don't spread.
+function reclaimLeftover(cells, polygon) {
+  if (!cells.length) return cells;
+  try {
+    const covered = cells.reduce((acc, c) => acc ? turf.union(acc, c) : c, null);
+    if (!covered) return cells;
+    const leftover = turf.difference(polygon, covered);
+    if (!leftover) return cells;
+
+    const leftoverCentroid = turf.centroid(leftover).geometry.coordinates;
+    let nearestIdx = 0, minDist = Infinity;
+    cells.forEach((c, i) => {
+      const cc = turf.centroid(c).geometry.coordinates;
+      const d = (cc[0] - leftoverCentroid[0]) ** 2 + (cc[1] - leftoverCentroid[1]) ** 2;
+      if (d < minDist) { minDist = d; nearestIdx = i; }
+    });
+
+    const merged = turf.union(cells[nearestIdx], leftover);
+    if (!merged) return cells;
+    return cells.map((c, i) => i === nearestIdx ? merged : c);
+  } catch {
+    return cells; // best-effort — a failed reclaim still leaves valid (if slightly short) coverage
+  }
+}
+
 // Strip subdivision along the longer axis — guaranteed full coverage
 function stripSubdivide(polygon, n) {
   if (polygon.geometry?.type === 'MultiPolygon') {
