@@ -1,6 +1,7 @@
 // command-center/src/home/SearchRow.jsx
+import { useState } from 'react';
 import { StatusPill } from '../ui/StatusPill';
-import { completeSearch } from '../firebase/searches';
+import { completeSearch, deleteSearch } from '../firebase/searches';
 
 function copyToClipboard(text) {
   if (navigator.clipboard?.writeText) {
@@ -11,10 +12,24 @@ function copyToClipboard(text) {
 }
 
 export function SearchRow({ search, onOpen }) {
+  const [deleting, setDeleting] = useState(false);
+
   async function handleComplete(e) {
     e.stopPropagation();
     if (!window.confirm(`Complete "${search.name}"? Volunteers will no longer be able to sign up.`)) return;
     await completeSearch(search.id);
+  }
+
+  async function handleDelete(e) {
+    e.stopPropagation();
+    if (!window.confirm(`Permanently delete "${search.name}" and all its zones/tracks/markers? This can't be undone.`)) return;
+    setDeleting(true);
+    try {
+      await deleteSearch(search.id);
+    } catch (err) {
+      console.error('deleteSearch failed:', err);
+      setDeleting(false);
+    }
   }
 
   function handleCopyInvite(e) {
@@ -55,6 +70,9 @@ export function SearchRow({ search, onOpen }) {
           Complete
         </button>
       )}
+      <button onClick={handleDelete} disabled={deleting} style={{ background: 'transparent', color: '#7f1d1d', padding: '4px 10px', fontSize: 12 }}>
+        {deleting ? 'Deleting…' : 'Delete'}
+      </button>
     </div>
   );
 }

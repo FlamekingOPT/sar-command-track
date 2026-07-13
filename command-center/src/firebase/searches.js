@@ -1,6 +1,8 @@
-import { collection, doc, addDoc, updateDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, addDoc, updateDoc, deleteDoc, getDocs, query, where, writeBatch, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { db } from './config';
 import { generateSearchCode } from '../search/searchCode';
+
+const DAY_ID = 'day-1';
 
 export async function createSearch({ name, date }) {
   const ref = await addDoc(collection(db, 'searches'), {
@@ -29,6 +31,28 @@ export async function updateSearchLetterZones(searchId, letterZones) {
       geometry: JSON.stringify(z.feature.geometry),
     })),
   });
+}
+
+async function deleteInBatches(refs) {
+  while (refs.length) {
+    const batch = writeBatch(db);
+    refs.splice(0, 500).forEach(ref => batch.delete(ref));
+    await batch.commit();
+  }
+}
+
+// Firestore has no cascading delete — clean up every subcollection and every
+// root-level doc that references this search before removing the search itself.
+export async function deleteSearch(searchId) {
+  for (const name of ['zones', 'tracks', 'markers']) {
+    const snap = await getDocs(collection(db, 'searches', searchId, 'days', DAY_ID, name));
+    await deleteInBatches(snap.docs.map(d => d.ref));
+  }
+  for (const [col, field] of [['searcherLinks', 'searchId'], ['zoneRequests', 'searchId']]) {
+    const snap = await getDocs(query(collection(db, col), where(field, '==', searchId)));
+    await deleteInBatches(snap.docs.map(d => d.ref));
+  }
+  await deleteDoc(doc(db, 'searches', searchId));
 }
 
 export function watchSearches(cb) {

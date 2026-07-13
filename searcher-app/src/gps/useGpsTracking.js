@@ -41,7 +41,24 @@ export function useGpsTracking(enabled, linkKey) {
       err => setError(err.code === 1 ? 'denied' : 'unavailable'),
       { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
     );
-    return () => navigator.geolocation.clearWatch(watchId);
+
+    // Mobile browsers (esp. iOS Safari) silently suspend watchPosition when the
+    // screen locks/tab backgrounds — no error fires, it just stops delivering.
+    // A wake lock keeps the screen (and GPS) alive; re-requesting on visibility
+    // return covers the case where the lock itself got released by the OS.
+    let wakeLock = null;
+    const requestWakeLock = () => {
+      navigator.wakeLock?.request('screen').then(lock => { wakeLock = lock; }).catch(() => {});
+    };
+    requestWakeLock();
+    const onVisibility = () => { if (document.visibilityState === 'visible') requestWakeLock(); };
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+      document.removeEventListener('visibilitychange', onVisibility);
+      wakeLock?.release().catch(() => {});
+    };
   }, [enabled, attempt, linkKey]);
 
   const retry = useCallback(() => setAttempt(a => a + 1), []);

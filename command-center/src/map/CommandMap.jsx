@@ -167,7 +167,7 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
       .map(t => turf.lineString(t.points.map(p => [p.lng, p.lat]), { volunteerId: t.volunteerId }));
     map.getSource('tracks')?.setData(turf.featureCollection(lines));
     const positions = tracks
-      .filter(t => t.points?.length >= 1)
+      .filter(t => t.points?.length >= 1 && t.zoneStatus !== 'searched')
       .map(t => turf.point(
         [t.points[t.points.length - 1].lng, t.points[t.points.length - 1].lat],
         { volunteerId: t.volunteerId }

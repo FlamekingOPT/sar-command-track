@@ -49,6 +49,13 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
 
   const readOnly = searchStatus === 'complete';
 
+  // Line stays visible forever (the walked path is the record); only the live
+  // position dot should disappear once that volunteer's zone is marked searched.
+  const statusByVolunteer = Object.fromEntries(
+    zones.filter(z => z.assignedTo).map(z => [z.assignedTo, z.status])
+  );
+  const tracksWithStatus = tracks.map(t => ({ ...t, zoneStatus: statusByVolunteer[t.volunteerId] }));
+
   async function handleFeatureDrawn(feature, type) {
     if (readOnly) return;
     setDrawMode('idle');
@@ -206,7 +213,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           letterZones={letterZones}
           subZones={zones}
           osmBarriers={osmBarriers}
-          tracks={tracks}
+          tracks={tracksWithStatus}
           liveMarkers={liveMarkers}
         />
         <ZonePanel zones={zones} volunteers={volunteers} onStatusChange={handleStatusChange} readOnly={readOnly} />

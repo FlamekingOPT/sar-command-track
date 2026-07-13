@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { getSearch } from '../firebase/searches';
 import { watchZones } from '../firebase/zones';
-import { createRequest, watchRequest } from '../firebase/zoneRequests';
-import { getIdentity, saveName, getSavedRequest, saveRequest } from './identity';
+import { claimZone } from './claimZone';
+import { getIdentity, saveName } from './identity';
 import { PickMap } from './PickMap';
 
 // Day management arrives in Plan 4; until then the whole system uses one fixed day.
@@ -26,7 +26,7 @@ export function PickPage({ searchId }) {
   const [zones, setZones] = useState([]);
   const [pendingLetter, setPendingLetter] = useState(null);
   const [nameInput, setNameInput] = useState('');
-  const [requestId, setRequestId] = useState(() => getSavedRequest(searchId));
+  const [claiming, setClaiming] = useState(false);
   const [requestStatus, setRequestStatus] = useState(null);
   const [requestError, setRequestError] = useState(null);
   const identity = useMemo(getIdentity, []);
@@ -38,14 +38,6 @@ export function PickPage({ searchId }) {
     return watchZones(search.id, DAY_ID, setZones);
   }, [search]);
 
-  useEffect(() => {
-    if (!requestId) return;
-    return watchRequest(requestId, req => {
-      setRequestStatus(req.status);
-      if (req.status === 'assigned' && req.token) window.location.href = `/s/${req.token}`;
-    });
-  }, [requestId]);
-
   if (search === undefined) return <p style={{ padding: 24 }}>Loading…</p>;
   if (search === null) return <p style={{ padding: 24 }}>This search link isn't valid.</p>;
 
@@ -53,13 +45,17 @@ export function PickPage({ searchId }) {
 
   async function submitRequest(letter, name) {
     setRequestError(null);
+    setRequestStatus(null);
+    setClaiming(true);
     try {
-      const id = await createRequest({ searchId: search.id, letter, webVolunteerId: identity.id, name });
-      saveRequest(search.id, id);
-      setRequestId(id);
-      setRequestStatus('pending');
+      const token = await claimZone({
+        searchId: search.id, dayId: DAY_ID, letter, zones, volunteerId: identity.id, name,
+      });
+      if (!token) { setRequestStatus('no_availability'); setClaiming(false); return; }
+      window.location.href = `/s/${token}`;
     } catch {
       setRequestError("Something went wrong claiming that zone — try again.");
+      setClaiming(false);
     }
   }
 
@@ -77,8 +73,8 @@ export function PickPage({ searchId }) {
     setPendingLetter(null);
   }
 
-  if (requestStatus === 'pending') {
-    return <p style={{ padding: 24, textAlign: 'center' }}>Finding your zone…</p>;
+  if (claiming) {
+    return <p style={{ padding: 24, textAlign: 'center' }}>Joining zone…</p>;
   }
 
   return (
