@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react';
 import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
-import { fetchStreetGraph, selectDetail } from '../zones/overpass';
-import { computeZoneCount, allocateZoneCounts, buildBlocks, mergeBlocksToZones } from '../zones/subdivider';
+import { fetchStreets, selectDetail } from '../zones/overpass';
+import { computeZoneCount, allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering } from '../zones/subdivider';
+import { gridZones } from '../zones/grid';
 import { createZones, updateZoneStatus, watchZones, deleteZonesForBoundary } from '../firebase/zones';
 import { updateSearchBoundaries, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
@@ -137,7 +138,9 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       // estimate splits `remaining` by area; the real allocation below uses
       // actual block counts (spec §3).
       const totalTargetArea = targets.reduce((s, t) => s + turf.area(t.feature), 0);
-      const built = [];
+      const built = [];   // boundaries with street data
+      const gridded = []; // boundaries that fell back to grid zones
+      const notices = [];
       for (let i = 0; i < targets.length; i++) {
         const t = targets[i];
         const areaM2 = turf.area(t.feature);
@@ -145,7 +148,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         const label = targets.length > 1 ? ` (boundary ${i + 1} of ${targets.length})` : '';
         try {
           setGeneratingStatus(`Fetching map data…${label}`);
-          const { hardLines, softLines } = await fetchStreetGraph(t.feature, {
+          const { hardLines, softLines } = await fetchStreets(t.feature, {
             detail: selectDetail(areaM2, estAlloc),
             onProgress: (done, total) => {
               if (total > 1) setGeneratingStatus(`Fetching map data…${label} tile ${Math.min(done + 1, total)}/${total}`);
@@ -155,32 +158,53 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           const { blocks, adjacency } = buildBlocks(t.feature, hardLines, softLines);
           built.push({ ...t, blocks, adjacency });
         } catch (err) {
-          console.error(`fetch/build failed for boundary ${t.id}:`, err);
-          failures.push(`Boundary ${i + 1}: ${err.message}`);
+          // Street data unavailable (no cache tile, live Overpass down) —
+          // degrade to grid zones so generation NEVER produces nothing.
+          console.error(`street data unavailable for boundary ${t.id}, using grid zones:`, err);
+          gridded.push({ ...t, polys: gridZones(t.feature, estAlloc) });
+          notices.push(`Boundary ${i + 1}: street data unavailable — used grid zones.`);
         }
       }
 
+      setGeneratingStatus('Generating zones…');
+      const all = []; // { poly, boundaryId } across every target boundary
+      const gridCount = gridded.reduce((s, g) => s + g.polys.length, 0);
       if (built.length) {
-        const alloc = allocateZoneCounts(remaining, built.map(b => Math.max(1, b.blocks.length)));
-        setGeneratingStatus('Generating zones…');
-        let nextNumber = zones.reduce((m, z) => Math.max(m, z.number), 0) + 1;
-        const toCreate = [];
+        const alloc = allocateZoneCounts(Math.max(1, remaining - gridCount), built.map(b => Math.max(1, b.blocks.length)));
         const noStreets = [];
         built.forEach((b, i) => {
           // clamp: a zone is never smaller than one block (spec §1)
           const clamped = Math.min(alloc[i], Math.max(1, b.blocks.length));
           const polys = b.blocks.length ? mergeBlocksToZones(b.blocks, b.adjacency, clamped) : [b.feature];
           if (!b.blocks.length) noStreets.push(b.id);
-          for (const p of polys) toCreate.push({ number: nextNumber++, polygon: p.geometry, boundaryId: b.id });
+          for (const p of polys) all.push({ poly: p, boundaryId: b.id });
         });
-        setGeneratingStatus(`Saving ${toCreate.length} zones…`);
-        await createZones(searchId, DAY_ID, toCreate);
         if (noStreets.length) {
-          setGenerateNotice(`${noStreets.length} boundar${noStreets.length === 1 ? 'y' : 'ies'} had no mapped streets — each became a single zone.`);
-        } else if (toCreate.length !== remaining && !failures.length) {
-          setGenerateNotice(`Generated ${toCreate.length} zones (requested ${remaining} — limited by available blocks or hard-road divides).`);
+          notices.push(`${noStreets.length} boundar${noStreets.length === 1 ? 'y' : 'ies'} had no mapped streets — each became a single zone.`);
         }
       }
+      for (const g of gridded) {
+        for (const p of g.polys) all.push({ poly: p, boundaryId: g.id });
+      }
+
+      if (all.length) {
+        // Numbering reads like a page ACROSS all boundaries: north rows first,
+        // west→east — zone 47 sits next to zone 46 on the map.
+        const boundaryIdByPoly = new Map(all.map(a => [a.poly, a.boundaryId]));
+        const ordered = orderZonesForNumbering(all.map(a => a.poly));
+        const firstNumber = zones.reduce((m, z) => Math.max(m, z.number), 0) + 1;
+        const toCreate = ordered.map((p, k) => ({
+          number: firstNumber + k,
+          polygon: p.geometry,
+          boundaryId: boundaryIdByPoly.get(p),
+        }));
+        setGeneratingStatus(`Saving ${toCreate.length} zones…`);
+        await createZones(searchId, DAY_ID, toCreate);
+        if (toCreate.length !== remaining && !notices.length) {
+          notices.push(`Generated ${toCreate.length} zones (requested ${remaining} — limited by available blocks or hard-road divides).`);
+        }
+      }
+      if (notices.length) setGenerateNotice(notices.join(' '));
     } catch (err) {
       console.error('handleGenerateZones failed:', err);
       failures.push(err.message);
