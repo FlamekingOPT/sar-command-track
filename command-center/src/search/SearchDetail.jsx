@@ -3,7 +3,7 @@ import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
 import { fetchStreetGraph, computeZoneCount, generateZones } from '../zones/subdivider';
-import { createZone, updateZoneStatus, watchZones } from '../firebase/zones';
+import { createZones, updateZoneStatus, watchZones } from '../firebase/zones';
 import { updateSearchBoundary, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
 
@@ -76,9 +76,8 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       const zoneCount = computeZoneCount(turf.area(boundaryFeature), searchMinutes, searchMode);
       const zonePolygons = generateZones(boundaryFeature, zoneCount, hardLines, softLines);
 
-      for (let i = 0; i < zonePolygons.length; i++) {
-        await createZone(searchId, DAY_ID, { number: i + 1, polygon: zonePolygons[i].geometry });
-      }
+      setGeneratingStatus(`Saving ${zonePolygons.length} zones…`);
+      await createZones(searchId, DAY_ID, zonePolygons.map((p, i) => ({ number: i + 1, polygon: p.geometry })));
     } catch (err) {
       console.error('handleGenerateZones failed:', err);
       setGenerateError("Couldn't fetch street data — the map service may be busy. Try again.");
