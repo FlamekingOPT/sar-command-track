@@ -97,7 +97,7 @@ export default function App() {
         background: 'rgba(30,41,59,0.92)', color: '#f8fafc',
         borderRadius: 10, padding: '10px 14px', fontWeight: 700, textAlign: 'center',
       }}>
-        Zone {zone.letter}{zone.number}
+        Zone {zone.number}
         {gpsError === 'denied' && (
           <div style={{ fontWeight: 400, fontSize: 13, marginTop: 6 }}>
             GPS permission is required to track your search.{' '}
