@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as turf from '@turf/turf';
-import { fetchStreetGraph, selectDetail, DETAIL_LEVELS } from '../../src/zones/overpass.js';
+import { fetchStreetGraph, selectDetail, DETAIL_LEVELS, tileBboxes, MAX_FETCH_AREA_M2 } from '../../src/zones/overpass.js';
 
 describe('fetchStreetGraph', () => {
   const boundary = turf.polygon([[
@@ -133,5 +133,59 @@ describe('fetchStreetGraph level of detail', () => {
     expect(options.body).toContain('motorway|trunk|primary|secondary');
     expect(options.body).not.toContain('tertiary');
     expect(options.body).toContain('river|canal|stream');
+  });
+});
+
+describe('tileBboxes', () => {
+  it('returns the bbox unchanged when it is under the max area', () => {
+    const small = [-118.30, 34.00, -118.29, 34.01]; // ~1 km²
+    expect(tileBboxes(small, MAX_FETCH_AREA_M2)).toEqual([small]);
+  });
+
+  it('splits an oversized bbox into a grid that tiles it exactly', () => {
+    const big = [-118.5, 33.9, -118.2, 34.15]; // ~770 km²
+    const tiles = tileBboxes(big, MAX_FETCH_AREA_M2);
+    expect(tiles.length).toBeGreaterThanOrEqual(Math.ceil(770_000_000 / MAX_FETCH_AREA_M2));
+    // tiles cover the bbox: min of mins and max of maxes reconstruct it
+    expect(Math.min(...tiles.map(t => t[0]))).toBeCloseTo(big[0], 9);
+    expect(Math.min(...tiles.map(t => t[1]))).toBeCloseTo(big[1], 9);
+    expect(Math.max(...tiles.map(t => t[2]))).toBeCloseTo(big[2], 9);
+    expect(Math.max(...tiles.map(t => t[3]))).toBeCloseTo(big[3], 9);
+  });
+});
+
+describe('fetchStreetGraph tiling', () => {
+  const bigBoundary = turf.polygon([[
+    [-118.5, 33.9], [-118.2, 33.9], [-118.2, 34.15], [-118.5, 34.15], [-118.5, 33.9],
+  ]]);
+  const wayFixture = (id) => ({
+    type: 'way', id, tags: { highway: 'primary' },
+    geometry: [{ lat: 34.0, lon: -118.4 }, { lat: 34.01, lon: -118.39 }],
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('fetches once per tile, reports progress, and dedupes ways spanning tiles', async () => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ elements: [wayFixture(42)] }), // same way id from every tile
+    });
+    const progress = [];
+    const { hardLines } = await fetchStreetGraph(bigBoundary, {
+      detail: 'city',
+      onProgress: (done, total) => progress.push([done, total]),
+    });
+    const expectedTiles = global.fetch.mock.calls.length;
+    expect(expectedTiles).toBeGreaterThan(1); // one call per tile (all succeed first try)
+    expect(hardLines).toHaveLength(1); // way 42 deduped across every tile
+    expect(progress[progress.length - 1]).toEqual([expectedTiles, expectedTiles]);
+  });
+
+  it('names the failing tile when a tile fails on every endpoint', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ elements: [] }) }) // tile 1 ok
+      .mockResolvedValue({ ok: false, status: 504, json: () => Promise.reject(new SyntaxError('xml')) }); // tile 2+ fails, both endpoints
+    await expect(fetchStreetGraph(bigBoundary, { detail: 'city' }))
+      .rejects.toThrow(/tile 2 of \d+/);
   });
 });

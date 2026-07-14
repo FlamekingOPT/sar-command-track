@@ -20,6 +20,30 @@ export function selectDetail(boundaryAreaM2, estimatedZoneCount) {
   return 'full';
 }
 
+// Public Overpass cannot reliably answer one huge query (~300 km² boundaries
+// repeatedly produced "Couldn't fetch street data" in the field). Split the
+// padded bbox into a grid of tiles and query them SEQUENTIALLY — the public
+// instances rate-limit parallel requests from one client (spec §3).
+export const MAX_FETCH_AREA_M2 = 30_000_000; // ~30 km² per query — tunable
+
+export function tileBboxes(bbox, maxAreaM2) {
+  const [west, south, east, north] = bbox;
+  const areaM2 = turf.area(turf.bboxPolygon(bbox));
+  const tileCount = Math.ceil(areaM2 / maxAreaM2);
+  if (tileCount <= 1) return [bbox];
+  const cols = Math.ceil(Math.sqrt(tileCount));
+  const rows = Math.ceil(tileCount / cols);
+  const dx = (east - west) / cols;
+  const dy = (north - south) / rows;
+  const tiles = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      tiles.push([west + c * dx, south + r * dy, west + (c + 1) * dx, south + (r + 1) * dy]);
+    }
+  }
+  return tiles;
+}
+
 // Overpass's public de-facto instance 504s under load reasonably often, and
 // its error responses are XML, not JSON — calling resp.json() unconditionally
 // throws a confusing SyntaxError instead of a clear "couldn't fetch streets"
@@ -71,8 +95,26 @@ function classifyWays(elements) {
   return { hardLines, softLines };
 }
 
-export async function fetchStreetGraph(boundary, { detail = 'full' } = {}) {
+export async function fetchStreetGraph(boundary, { detail = 'full', onProgress } = {}) {
   const bbox = paddedBbox(boundary);
-  const data = await queryOverpass(buildQuery(bbox, detail));
-  return classifyWays(data.elements);
+  const tiles = tileBboxes(bbox, MAX_FETCH_AREA_M2);
+  // Dedupe by OSM way id: the bbox filter returns any way touching the tile,
+  // so a road crossing a tile border comes back from both tiles.
+  const wayById = new Map();
+  for (let i = 0; i < tiles.length; i++) {
+    onProgress?.(i, tiles.length);
+    let data;
+    try {
+      data = await queryOverpass(buildQuery(tiles[i], detail)); // queryOverpass already retries on the fallback endpoint
+    } catch (err) {
+      throw new Error(`Map data fetch failed on tile ${i + 1} of ${tiles.length}: ${err.message}`);
+    }
+    for (const el of data.elements) {
+      if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
+      const key = el.id ?? `anon-${wayById.size}`;
+      if (!wayById.has(key)) wayById.set(key, el);
+    }
+  }
+  onProgress?.(tiles.length, tiles.length);
+  return classifyWays([...wayById.values()]);
 }
