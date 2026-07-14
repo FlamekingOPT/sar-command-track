@@ -33,6 +33,25 @@ export function allocateZoneCounts(total, weights) {
   return alloc;
 }
 
+// Zone numbers should read like a page — north rows first, west→east within a
+// row — so zone 47 sits next to zone 46 on the map instead of build-order
+// lottery numbers. Centroids are banded into ~sqrt(n) latitude rows.
+export function orderZonesForNumbering(polys) {
+  if (polys.length <= 1) return [...polys];
+  const withC = polys.map(p => {
+    const [lon, lat] = turf.centroid(p).geometry.coordinates;
+    return { p, lon, lat };
+  });
+  const lats = withC.map(c => c.lat);
+  const maxLat = Math.max(...lats), minLat = Math.min(...lats);
+  const rows = Math.max(1, Math.round(Math.sqrt(polys.length)));
+  const rowH = (maxLat - minLat) / rows || 1;
+  const band = lat => Math.min(rows - 1, Math.floor((maxLat - lat) / rowH));
+  return withC
+    .sort((a, b) => band(a.lat) - band(b.lat) || a.lon - b.lon)
+    .map(c => c.p);
+}
+
 export const BOUNDARY_PAD_METERS = 300;
 
 // Blocks touching the real boundary's edge need their closing cross-street,

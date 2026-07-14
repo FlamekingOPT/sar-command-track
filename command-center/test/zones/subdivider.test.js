@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { computeZoneCount, allocateZoneCounts, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones } from '../../src/zones/subdivider.js';
+import { computeZoneCount, allocateZoneCounts, orderZonesForNumbering, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones } from '../../src/zones/subdivider.js';
 
 describe('computeZoneCount', () => {
   it('exposes the validated per-minute coverage rates', () => {
@@ -259,3 +259,30 @@ describe('generateZones', () => {
   });
 });
 
+
+describe('orderZonesForNumbering', () => {
+  // 3x3 grid of unit squares, fed in shuffled order. Reading order = north row
+  // first, west→east within a row: centroids (lat 2.5, lon 0.5/1.5/2.5), then
+  // lat 1.5 row, then lat 0.5 row.
+  const cell = (x, y) => turf.polygon([[[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]]]);
+  const shuffled = [cell(1, 1), cell(2, 2), cell(0, 0), cell(2, 0), cell(0, 2), cell(1, 0), cell(2, 1), cell(0, 1), cell(1, 2)];
+
+  it('orders zones like reading a page: north rows first, west to east', () => {
+    const ordered = orderZonesForNumbering(shuffled);
+    const key = p => {
+      const [lon, lat] = turf.centroid(p).geometry.coordinates;
+      return `${Math.floor(lon)},${Math.floor(lat)}`;
+    };
+    expect(ordered.map(key)).toEqual([
+      '0,2', '1,2', '2,2',
+      '0,1', '1,1', '2,1',
+      '0,0', '1,0', '2,0',
+    ]);
+  });
+
+  it('returns the same polygons, just reordered', () => {
+    const ordered = orderZonesForNumbering(shuffled);
+    expect(ordered).toHaveLength(9);
+    for (const p of shuffled) expect(ordered).toContain(p);
+  });
+});
