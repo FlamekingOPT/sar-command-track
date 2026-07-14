@@ -95,6 +95,64 @@ function classifyWays(elements) {
   return { hardLines, softLines };
 }
 
+// ---- Street tile cache (spec 2026-07-14 street-tile-cache) ----
+// Prefetched full-detail Overpass responses live as static files on our own
+// hosting (tools/prefetch-streets.mjs fills them). Searches read those first —
+// fast and reliable — and only fall back to live Overpass for tiles the prep
+// job hasn't covered. LOD is applied client-side so one cache serves all
+// detail levels.
+export const TILE_SIZE_DEG = 0.05; // ~25 km² at LA latitude
+export const STREET_TILE_BASE = '/street-tiles';
+
+export function cacheTileKeys([west, south, east, north]) {
+  const tiles = [];
+  const ix0 = Math.floor(west / TILE_SIZE_DEG);
+  const ix1 = Math.floor(east / TILE_SIZE_DEG);
+  const iy0 = Math.floor(south / TILE_SIZE_DEG);
+  const iy1 = Math.floor(north / TILE_SIZE_DEG);
+  for (let iy = iy0; iy <= iy1; iy++) {
+    for (let ix = ix0; ix <= ix1; ix++) {
+      tiles.push({
+        key: `tile_${ix}_${iy}`,
+        bbox: [ix * TILE_SIZE_DEG, iy * TILE_SIZE_DEG, (ix + 1) * TILE_SIZE_DEG, (iy + 1) * TILE_SIZE_DEG],
+      });
+    }
+  }
+  return tiles;
+}
+
+export function filterByDetail(elements, detail) {
+  const re = new RegExp(`^(${DETAIL_LEVELS[detail]})$`);
+  return elements.filter(el => el.tags?.waterway || re.test(el.tags?.highway ?? ''));
+}
+
+export async function fetchStreets(boundary, { detail = 'full', onProgress } = {}) {
+  const tiles = cacheTileKeys(paddedBbox(boundary));
+  const wayById = new Map();
+  for (let i = 0; i < tiles.length; i++) {
+    onProgress?.(i, tiles.length);
+    let data = null;
+    try {
+      const resp = await fetch(`${STREET_TILE_BASE}/${tiles[i].key}.json`);
+      if (resp.ok) data = await resp.json();
+    } catch { /* cache unreachable — fall through to live Overpass */ }
+    if (!data) {
+      try {
+        data = await queryOverpass(buildQuery(tiles[i].bbox, 'full'));
+      } catch (err) {
+        throw new Error(`Map data unavailable for tile ${i + 1} of ${tiles.length}: ${err.message}`);
+      }
+    }
+    for (const el of data.elements) {
+      if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
+      const key = el.id ?? `anon-${wayById.size}`;
+      if (!wayById.has(key)) wayById.set(key, el);
+    }
+  }
+  onProgress?.(tiles.length, tiles.length);
+  return classifyWays(filterByDetail([...wayById.values()], detail));
+}
+
 export async function fetchStreetGraph(boundary, { detail = 'full', onProgress } = {}) {
   const bbox = paddedBbox(boundary);
   const tiles = tileBboxes(bbox, MAX_FETCH_AREA_M2);

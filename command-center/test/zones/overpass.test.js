@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as turf from '@turf/turf';
-import { fetchStreetGraph, selectDetail, DETAIL_LEVELS, tileBboxes, MAX_FETCH_AREA_M2 } from '../../src/zones/overpass.js';
+import { fetchStreetGraph, fetchStreets, selectDetail, DETAIL_LEVELS, tileBboxes, cacheTileKeys, filterByDetail, MAX_FETCH_AREA_M2, TILE_SIZE_DEG, STREET_TILE_BASE } from '../../src/zones/overpass.js';
 
 describe('fetchStreetGraph', () => {
   const boundary = turf.polygon([[
@@ -187,5 +187,96 @@ describe('fetchStreetGraph tiling', () => {
       .mockResolvedValue({ ok: false, status: 504, json: () => Promise.reject(new SyntaxError('xml')) }); // tile 2+ fails, both endpoints
     await expect(fetchStreetGraph(bigBoundary, { detail: 'city' }))
       .rejects.toThrow(/tile 2 of \d+/);
+  });
+});
+
+describe('cacheTileKeys', () => {
+  it('covers a bbox with 0.05-degree tiles keyed by grid index', () => {
+    const tiles = cacheTileKeys([-118.31, 34.01, -118.24, 34.06]);
+    // lon -118.31..-118.24 spans indices -2367..-2365 (3 cols); lat 34.01..34.06 spans 680..681 (2 rows)
+    expect(tiles).toHaveLength(6);
+    expect(tiles[0].key).toMatch(/^tile_-?\d+_-?\d+$/);
+    // every tile bbox is TILE_SIZE_DEG on each side and they cover the input
+    for (const t of tiles) {
+      expect(t.bbox[2] - t.bbox[0]).toBeCloseTo(TILE_SIZE_DEG, 9);
+      expect(t.bbox[3] - t.bbox[1]).toBeCloseTo(TILE_SIZE_DEG, 9);
+    }
+    expect(Math.min(...tiles.map(t => t.bbox[0]))).toBeLessThanOrEqual(-118.31);
+    expect(Math.max(...tiles.map(t => t.bbox[2]))).toBeGreaterThanOrEqual(-118.24);
+  });
+});
+
+describe('filterByDetail', () => {
+  const els = [
+    { type: 'way', id: 1, tags: { highway: 'residential' }, geometry: [{ lat: 0, lon: 0 }, { lat: 1, lon: 1 }] },
+    { type: 'way', id: 2, tags: { highway: 'primary' }, geometry: [{ lat: 0, lon: 0 }, { lat: 1, lon: 1 }] },
+    { type: 'way', id: 3, tags: { waterway: 'river' }, geometry: [{ lat: 0, lon: 0 }, { lat: 1, lon: 1 }] },
+  ];
+  it('keeps only matching road classes plus waterways', () => {
+    const city = filterByDetail(els, 'city');
+    expect(city.map(e => e.id)).toEqual([2, 3]);
+    expect(filterByDetail(els, 'full').map(e => e.id)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('fetchStreets (cache-first)', () => {
+  const boundary = turf.polygon([[
+    [-118.30, 34.00], [-118.29, 34.00], [-118.29, 34.01], [-118.30, 34.01], [-118.30, 34.00],
+  ]]);
+  const cachedElements = [
+    { type: 'way', id: 7, tags: { highway: 'primary' }, geometry: [{ lat: 34.005, lon: -118.295 }, { lat: 34.006, lon: -118.294 }] },
+    { type: 'way', id: 8, tags: { highway: 'residential' }, geometry: [{ lat: 34.003, lon: -118.297 }, { lat: 34.004, lon: -118.296 }] },
+  ];
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('serves entirely from cache tiles without touching Overpass', async () => {
+    global.fetch = vi.fn(url => {
+      if (String(url).startsWith(STREET_TILE_BASE)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ elements: cachedElements }) });
+      }
+      throw new Error(`unexpected non-cache fetch: ${url}`);
+    });
+    const { hardLines, softLines } = await fetchStreets(boundary);
+    expect(hardLines).toHaveLength(1);
+    expect(softLines).toHaveLength(1);
+    for (const [url] of global.fetch.mock.calls) {
+      expect(String(url)).toContain(STREET_TILE_BASE);
+    }
+  });
+
+  it('falls back to live Overpass only for missing tiles', async () => {
+    global.fetch = vi.fn(url => {
+      if (String(url).startsWith(STREET_TILE_BASE)) {
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.reject(new Error('404')) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ elements: cachedElements }) });
+    });
+    const { hardLines } = await fetchStreets(boundary);
+    expect(hardLines).toHaveLength(1);
+    const overpassCalls = global.fetch.mock.calls.filter(([url]) => !String(url).startsWith(STREET_TILE_BASE));
+    expect(overpassCalls.length).toBeGreaterThan(0);
+  });
+
+  it('applies the detail filter to cached full-detail data', async () => {
+    global.fetch = vi.fn(url => {
+      if (String(url).startsWith(STREET_TILE_BASE)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ elements: cachedElements }) });
+      }
+      throw new Error('unexpected');
+    });
+    const { hardLines, softLines } = await fetchStreets(boundary, { detail: 'city' });
+    expect(hardLines).toHaveLength(1); // primary kept
+    expect(softLines).toHaveLength(0); // residential filtered out
+  });
+
+  it('throws naming the tile when cache misses and Overpass fails', async () => {
+    global.fetch = vi.fn(url => {
+      if (String(url).startsWith(STREET_TILE_BASE)) {
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.reject(new Error('404')) });
+      }
+      return Promise.resolve({ ok: false, status: 504, json: () => Promise.reject(new SyntaxError('xml')) });
+    });
+    await expect(fetchStreets(boundary)).rejects.toThrow(/tile 1 of \d+/);
   });
 });
