@@ -4,10 +4,10 @@ import { db } from './config';
 const zonesCol = (searchId, dayId) =>
   collection(db, 'searches', searchId, 'days', dayId, 'zones');
 
-export async function createZone(searchId, dayId, { letter, number, polygon }) {
+export async function createZone(searchId, dayId, { number, polygon }) {
   const ref = doc(zonesCol(searchId, dayId));
   await setDoc(ref, {
-    letter, number,
+    number,
     polygon: JSON.stringify(polygon),
     status: 'unassigned', assignedTo: null, createdAt: serverTimestamp(),
   });

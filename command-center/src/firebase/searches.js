@@ -4,7 +4,7 @@ import { generateSearchCode } from '../search/searchCode';
 
 export async function createSearch({ name, date }) {
   const ref = await addDoc(collection(db, 'searches'), {
-    name, date, status: 'setup', createdAt: serverTimestamp(), boundary: null, letterZones: [],
+    name, date, status: 'setup', createdAt: serverTimestamp(), boundary: null,
     code: generateSearchCode(),
   });
   return { id: ref.id };
@@ -22,15 +22,6 @@ export async function completeSearch(searchId) {
   await updateDoc(doc(db, 'searches', searchId), { status: 'complete' });
 }
 
-export async function updateSearchLetterZones(searchId, letterZones) {
-  await updateDoc(doc(db, 'searches', searchId), {
-    letterZones: letterZones.map(z => ({
-      letter: z.letter,
-      geometry: JSON.stringify(z.feature.geometry),
-    })),
-  });
-}
-
 export function watchSearches(cb) {
   return onSnapshot(collection(db, 'searches'), snap =>
     cb(snap.docs.map(d => ({ id: d.id, ...d.data() })))
@@ -45,10 +36,6 @@ export function watchSearch(searchId, cb) {
       id: snap.id,
       ...data,
       boundary: data.boundary ? JSON.parse(data.boundary) : null,
-      letterZones: (data.letterZones ?? []).map(z => ({
-        ...z,
-        geometry: z.geometry ? JSON.parse(z.geometry) : null,
-      })),
     });
   });
 }
