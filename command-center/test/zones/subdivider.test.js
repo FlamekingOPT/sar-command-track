@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -134,5 +134,57 @@ describe('paddedBbox', () => {
     const westPad = turf.distance([west, south], [pWest, south], { units: 'kilometers' }) * 1000;
     expect(westPad).toBeGreaterThan(95);
     expect(westPad).toBeLessThan(105);
+  });
+});
+
+// A small 4-way intersection: one hard road (simulating a primary highway) running
+// north-south, one soft road (a residential street) running east-west, meeting at
+// the boundary's center. Streets must be pre-split at the crossing and must extend
+// past the padded fetch area on both ends — turf.polygonize requires lines to share
+// an exact vertex at every intersection (true of real OSM data; not true of two
+// straight lines that only cross geometrically), and a line that dangles inside the
+// padded area without reaching its edge can never close a face.
+const GRID_BOUNDARY = turf.polygon([[[0, 0], [0.003, 0], [0.003, 0.003], [0, 0.003], [0, 0]]]);
+const HARD_VERTICAL = [
+  turf.lineString([[0.0015, -0.01], [0.0015, 0.0015]]),
+  turf.lineString([[0.0015, 0.0015], [0.0015, 0.013]]),
+];
+const SOFT_HORIZONTAL = [
+  turf.lineString([[-0.01, 0.0015], [0.0015, 0.0015]]),
+  turf.lineString([[0.0015, 0.0015], [0.013, 0.0015]]),
+];
+
+describe('buildBlocks', () => {
+  it('produces 4 quadrant blocks covering 100% of the boundary', () => {
+    const { blocks } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, SOFT_HORIZONTAL);
+    expect(blocks).toHaveLength(4);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(GRID_BOUNDARY)).toBeGreaterThan(0.999);
+    expect(covered / turf.area(GRID_BOUNDARY)).toBeLessThan(1.001);
+  });
+
+  it('classifies the shared border across the hard road as hard, and across the soft road as soft', () => {
+    const { adjacency } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, SOFT_HORIZONTAL);
+    expect(adjacency.some(a => a.hard === true)).toBe(true);
+    expect(adjacency.some(a => a.hard === false)).toBe(true);
+  });
+
+  it('returns a single block covering the whole boundary when no streets are given', () => {
+    const { blocks } = buildBlocks(GRID_BOUNDARY, [], []);
+    expect(blocks).toHaveLength(1);
+    expect(turf.area(blocks[0]) / turf.area(GRID_BOUNDARY)).toBeCloseTo(1, 3);
+  });
+
+  it('does not throw on duplicate/near-duplicate hard lines (polygonize edge-ring regression)', () => {
+    const nearDuplicate = turf.lineString(
+      HARD_VERTICAL[0].geometry.coordinates.map(([x, y]) => [x + 1e-9, y])
+    );
+    expect(() =>
+      buildBlocks(GRID_BOUNDARY, [...HARD_VERTICAL, nearDuplicate, HARD_VERTICAL[0]], SOFT_HORIZONTAL)
+    ).not.toThrow();
+  });
+
+  it('HARD_HIGHWAYS covers motorway/trunk/primary only', () => {
+    expect(HARD_HIGHWAYS).toEqual(['motorway', 'trunk', 'primary']);
   });
 });

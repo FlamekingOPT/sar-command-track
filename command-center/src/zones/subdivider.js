@@ -222,3 +222,136 @@ export function paddedBbox(boundary, meters = BOUNDARY_PAD_METERS) {
   const newNorth = turf.destination([east, north], km, 0, { units: 'kilometers' }).geometry.coordinates[1];
   return [newWest, newSouth, newEast, newNorth];
 }
+
+export const HARD_HIGHWAYS = ['motorway', 'trunk', 'primary'];
+const MAX_PLAUSIBLE_BLOCK_AREA_M2 = 200000;
+const HARD_BARRIER_TOLERANCE_M = 6;
+const MIN_SHARED_EDGE_M = 3;
+const MIN_EDGE_LENGTH_M = 1;
+const SNAP_DECIMALS = 6;
+
+function snapLine(line) {
+  const seen = [];
+  for (const [x, y] of line.geometry.coordinates) {
+    const p = [Math.round(x * 10 ** SNAP_DECIMALS) / 10 ** SNAP_DECIMALS, Math.round(y * 10 ** SNAP_DECIMALS) / 10 ** SNAP_DECIMALS];
+    if (!seen.length || seen[seen.length - 1][0] !== p[0] || seen[seen.length - 1][1] !== p[1]) seen.push(p);
+  }
+  return seen.length >= 2 ? turf.lineString(seen) : null;
+}
+
+function isDegenerate(line) {
+  try { return turf.length(line, { units: 'kilometers' }) * 1000 < MIN_EDGE_LENGTH_M; }
+  catch { return true; }
+}
+
+function clipToPaddedBbox(line, bbox) {
+  let clipped;
+  try { clipped = turf.bboxClip(line, bbox); } catch { return []; }
+  if (!clipped.geometry.coordinates.length) return [];
+  if (clipped.geometry.type === 'LineString') return clipped.geometry.coordinates.length >= 2 ? [clipped] : [];
+  return clipped.geometry.coordinates.filter(c => c.length >= 2).map(c => turf.lineString(c));
+}
+
+function ringParam(bbox, [x, y]) {
+  const [west, south, east, north] = bbox;
+  const w = east - west, h = north - south, tol = 1e-7;
+  if (Math.abs(y - south) < tol) return (x - west) / w;
+  if (Math.abs(x - east) < tol) return 1 + (y - south) / h;
+  if (Math.abs(y - north) < tol) return 2 + (east - x) / w;
+  if (Math.abs(x - west) < tol) return 3 + (north - y) / h;
+  return null;
+}
+
+// polygonize never auto-nodes a line endpoint that lands mid-edge on another
+// line (a T-touch) — it only connects lines at coordinates they already share
+// exactly. Build the ring's own vertex list from the 4 corners plus every point
+// a clipped street touches, so the ring and the streets always share a real node.
+function buildNodedRing(bbox, touchPoints) {
+  const [west, south, east, north] = bbox;
+  const corners = [[west, south], [east, south], [east, north], [west, north]];
+  const withParams = [...corners, ...touchPoints]
+    .map(p => ({ p, t: ringParam(bbox, p) }))
+    .filter(x => x.t !== null)
+    .sort((a, b) => a.t - b.t);
+  const ring = [];
+  for (const { p } of withParams) {
+    const last = ring[ring.length - 1];
+    if (!last || Math.hypot(last[0] - p[0], last[1] - p[1]) > 1e-9) ring.push(p);
+  }
+  ring.push(ring[0]);
+  return turf.lineString(ring);
+}
+
+function buildEdgeSet(boundary, hardLines, softLines) {
+  const bbox = paddedBbox(boundary);
+  const clipped = [...hardLines, ...softLines].flatMap(l => clipToPaddedBbox(l, bbox));
+  const touchPoints = clipped.flatMap(l => {
+    const c = l.geometry.coordinates;
+    return [c[0], c[c.length - 1]].filter(p => ringParam(bbox, p) !== null);
+  });
+  const paddedRing = buildNodedRing(bbox, touchPoints);
+  let edges = [paddedRing, ...clipped].map(snapLine).filter(Boolean).filter(l => !isDegenerate(l));
+
+  // drop exact-duplicate edges (same endpoints, either direction) — a duplicate
+  // edge between the same two nodes produces a degenerate ring polygonize rejects
+  const seenKeys = new Set();
+  edges = edges.filter(l => {
+    const c = l.geometry.coordinates;
+    const a = c[0].join(','), b = c[c.length - 1].join(',');
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (seenKeys.has(key)) return false;
+    seenKeys.add(key);
+    return true;
+  });
+  return { edges, bbox };
+}
+
+function sharedAdjacency(polyA, polyB, hardLines) {
+  let overlap;
+  try {
+    overlap = turf.lineOverlap(turf.polygonToLine(polyA), turf.polygonToLine(polyB), { tolerance: 0.003 });
+  } catch { return null; }
+  if (!overlap?.features?.length) return null;
+
+  const totalLen = overlap.features.reduce((s, f) => s + turf.length(f, { units: 'kilometers' }), 0) * 1000;
+  if (totalLen < MIN_SHARED_EDGE_M) return null;
+
+  let longest = overlap.features[0], longestLen = 0;
+  overlap.features.forEach(f => {
+    const l = turf.length(f, { units: 'kilometers' });
+    if (l > longestLen) { longestLen = l; longest = f; }
+  });
+  const mid = turf.along(longest, longestLen / 2, { units: 'kilometers' });
+
+  let minD = Infinity;
+  for (const h of hardLines) {
+    try { minD = Math.min(minD, turf.pointToLineDistance(mid, h, { units: 'meters' })); } catch {}
+  }
+  return { hard: minD < HARD_BARRIER_TOLERANCE_M };
+}
+
+export function buildBlocks(boundary, hardLines, softLines) {
+  const { edges, bbox } = buildEdgeSet(boundary, hardLines, softLines);
+  const paddedBoundary = turf.bboxPolygon(bbox);
+  const rawFaces = turf.polygonize(turf.featureCollection(edges));
+
+  const blocks = rawFaces.features
+    .filter(f => {
+      try { return turf.booleanPointInPolygon(turf.centroid(f), paddedBoundary) && turf.area(f) > 0; }
+      catch { return false; }
+    })
+    .map(f => { try { return turf.intersect(f, boundary); } catch { return null; } })
+    // size cap applies AFTER clipping — a face's pre-clip (padded) area is
+    // inflated by whatever pad it happens to include, so checking before
+    // clipping rejects legitimate blocks (found while validating this code)
+    .filter(f => f && turf.area(f) > 1 && turf.area(f) < MAX_PLAUSIBLE_BLOCK_AREA_M2);
+
+  const adjacency = [];
+  for (let i = 0; i < blocks.length; i++) {
+    for (let j = i + 1; j < blocks.length; j++) {
+      const adj = sharedAdjacency(blocks[i], blocks[j], hardLines);
+      if (adj) adjacency.push({ a: i, b: j, hard: adj.hard });
+    }
+  }
+  return { blocks, adjacency };
+}
