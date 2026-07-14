@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as turf from '@turf/turf';
-import { computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, fetchStreetGraph } from '../../src/zones/subdivider.js';
+import { computeZoneCount, allocateZoneCounts, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, fetchStreetGraph } from '../../src/zones/subdivider.js';
 
 describe('computeZoneCount', () => {
   it('exposes the validated per-minute coverage rates', () => {
@@ -25,6 +25,30 @@ describe('computeZoneCount', () => {
 
   it('never returns less than 1 zone', () => {
     expect(computeZoneCount(10, 30, 'walked')).toBe(1);
+  });
+});
+
+describe('allocateZoneCounts', () => {
+  it('splits proportionally by block count and sums exactly to the total', () => {
+    // 14 zones across a 100-block boundary and a 9-block boundary:
+    // raw shares 12.84 / 1.16 → floors 12 / 1, leftover 1 goes to the
+    // largest fractional remainder (the 100-block boundary) → 13 / 1.
+    expect(allocateZoneCounts(14, [100, 9])).toEqual([13, 1]);
+  });
+
+  it('always sums exactly to the total across awkward splits', () => {
+    for (const [total, weights] of [[150, [70, 40, 12]], [7, [3, 3, 3]], [10, [1, 1, 1, 1]]]) {
+      const alloc = allocateZoneCounts(total, weights);
+      expect(alloc.reduce((s, a) => s + a, 0)).toBe(total);
+    }
+  });
+
+  it('gives every boundary at least 1 zone', () => {
+    expect(allocateZoneCounts(5, [1000, 1])).toEqual([4, 1]);
+  });
+
+  it('handles all-zero weights by giving 1 each', () => {
+    expect(allocateZoneCounts(3, [0, 0])).toEqual([1, 1]);
   });
 });
 

@@ -12,6 +12,27 @@ export function computeZoneCount(boundaryAreaM2, minutes, mode) {
   return Math.max(1, Math.round(boundaryAreaM2 / targetAreaM2));
 }
 
+// Largest-remainder allocation: split `total` zones across boundaries
+// proportionally to `weights` (their block counts), minimum 1 each, summing
+// exactly to `total`. The only case the sum exceeds `total` is more boundaries
+// than requested zones — the min-1 floor wins there by design (spec §1).
+export function allocateZoneCounts(total, weights) {
+  const sum = weights.reduce((s, w) => s + w, 0);
+  if (!sum) return weights.map(() => 1);
+  const raw = weights.map(w => (total * w) / sum);
+  const alloc = raw.map(r => Math.max(1, Math.floor(r)));
+  let leftover = total - alloc.reduce((s, a) => s + a, 0);
+  const byRemainder = raw
+    .map((r, i) => ({ i, frac: r - Math.floor(r) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (const { i } of byRemainder) {
+    if (leftover <= 0) break;
+    alloc[i] += 1;
+    leftover -= 1;
+  }
+  return alloc;
+}
+
 export const BOUNDARY_PAD_METERS = 300;
 
 // Blocks touching the real boundary's edge need their closing cross-street,
