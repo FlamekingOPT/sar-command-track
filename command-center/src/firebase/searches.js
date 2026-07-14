@@ -13,10 +13,6 @@ export async function createSearch({ name, date }) {
   return { id: ref.id };
 }
 
-export async function updateSearchBoundary(searchId, boundary) {
-  await updateDoc(doc(db, 'searches', searchId), { boundary: JSON.stringify(boundary) });
-}
-
 export async function updateSearchBoundaries(searchId, boundaries) {
   await updateDoc(doc(db, 'searches', searchId), { boundaries: JSON.stringify(boundaries) });
 }
@@ -66,8 +62,6 @@ export function watchSearch(searchId, cb) {
       id: snap.id,
       ...data,
       boundaries,
-      // legacy field kept until SearchDetail switches over (Task 7 removes it)
-      boundary: boundaries[0]?.geometry ?? null,
     });
   });
 }
