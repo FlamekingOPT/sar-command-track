@@ -216,16 +216,21 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
 ];
+const OVERPASS_TIMEOUT_MS = 20000;
 
 async function queryOverpass(query) {
   let lastError;
   for (const endpoint of OVERPASS_ENDPOINTS) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
     try {
-      const resp = await fetch(endpoint, { method: 'POST', body: query });
+      const resp = await fetch(endpoint, { method: 'POST', body: query, signal: controller.signal });
       if (!resp.ok) throw new Error(`Overpass request to ${endpoint} failed (${resp.status})`);
       return await resp.json();
     } catch (err) {
-      lastError = err;
+      lastError = err.name === 'AbortError' ? new Error(`Overpass request to ${endpoint} timed out`) : err;
+    } finally {
+      clearTimeout(timer);
     }
   }
   throw new Error(`Couldn't fetch street data from any Overpass endpoint: ${lastError?.message ?? 'unknown error'}`);

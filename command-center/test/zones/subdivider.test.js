@@ -262,4 +262,29 @@ describe('fetchStreetGraph', () => {
     global.fetch = vi.fn().mockResolvedValue(gatewayTimeoutResponse());
     await expect(fetchStreetGraph(boundary)).rejects.toThrow();
   });
+
+  it('aborts a hung request instead of waiting forever, and fails over to the next endpoint', async () => {
+    // Regression for a real bug: an oversized boundary's Overpass request can
+    // just hang (no response, no error) rather than cleanly failing, and the
+    // original code had no client-side timeout — the UI sat on "Fetching
+    // street network…" forever with no way out but a page refresh.
+    vi.useFakeTimers();
+    try {
+      global.fetch = vi.fn()
+        .mockImplementationOnce((url, { signal }) => new Promise((resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+        }))
+        .mockResolvedValueOnce(okResponse());
+
+      const resultPromise = fetchStreetGraph(boundary);
+      await vi.advanceTimersByTimeAsync(20000);
+      const { hardLines, softLines } = await resultPromise;
+
+      expect(hardLines).toHaveLength(2);
+      expect(softLines).toHaveLength(3);
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
