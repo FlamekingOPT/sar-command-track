@@ -18,6 +18,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [searchMode, setSearchMode] = useState('walked');
   const [generatingZones, setGeneratingZones] = useState(false);
   const [generatingStatus, setGeneratingStatus] = useState('');
+  const [generateError, setGenerateError] = useState('');
   const [zones, setZones] = useState([]);
   const [tracks, setTracks] = useState([]);
   const [liveMarkers, setLiveMarkers] = useState([]);
@@ -64,6 +65,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   async function handleGenerateZones() {
     if (!boundary) return;
     setGeneratingZones(true);
+    setGenerateError('');
     try {
       const boundaryFeature = { type: 'Feature', geometry: boundary, properties: {} };
 
@@ -79,6 +81,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       }
     } catch (err) {
       console.error('handleGenerateZones failed:', err);
+      setGenerateError("Couldn't fetch street data — the map service may be busy. Try again.");
     }
     setGeneratingStatus('');
     setGeneratingZones(false);
@@ -148,6 +151,9 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
               style={{ background: '#3b82f6', padding: '4px 12px', fontWeight: 600 }}>
               {generatingZones ? generatingStatus || 'Generating…' : '🗺 Generate Zones'}
             </button>
+            {generateError && (
+              <span style={{ color: '#fca5a5', fontSize: 13 }}>{generateError}</span>
+            )}
           </>
         )}
 

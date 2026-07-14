@@ -207,6 +207,30 @@ export function generateZones(boundary, zoneCount, hardLines, softLines) {
   return mergeBlocksToZones(blocks, adjacency, zoneCount);
 }
 
+// Overpass's public de-facto instance 504s under load reasonably often, and
+// its error responses are XML, not JSON — calling resp.json() unconditionally
+// throws a confusing SyntaxError instead of a clear "couldn't fetch streets"
+// failure (this is exactly what happened in production). Check resp.ok first,
+// and fall back to a second public instance before giving up.
+const OVERPASS_ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
+
+async function queryOverpass(query) {
+  let lastError;
+  for (const endpoint of OVERPASS_ENDPOINTS) {
+    try {
+      const resp = await fetch(endpoint, { method: 'POST', body: query });
+      if (!resp.ok) throw new Error(`Overpass request to ${endpoint} failed (${resp.status})`);
+      return await resp.json();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw new Error(`Couldn't fetch street data from any Overpass endpoint: ${lastError?.message ?? 'unknown error'}`);
+}
+
 export async function fetchStreetGraph(boundary) {
   const [west, south, east, north] = paddedBbox(boundary);
   const query = `[out:json][timeout:25];
@@ -216,8 +240,7 @@ export async function fetchStreetGraph(boundary) {
 );
 out geom;`;
 
-  const resp = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: query });
-  const data = await resp.json();
+  const data = await queryOverpass(query);
 
   const hardLines = [];
   const softLines = [];

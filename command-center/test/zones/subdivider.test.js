@@ -207,18 +207,29 @@ describe('fetchStreetGraph', () => {
     [-118.30, 34.00], [-118.29, 34.00], [-118.29, 34.01], [-118.30, 34.01], [-118.30, 34.00],
   ]]);
 
+  const okResponse = () => ({
+    ok: true,
+    json: () => Promise.resolve({
+      elements: [
+        { type: 'way', tags: { highway: 'primary', name: 'Main St' }, geometry: [{ lat: 34.005, lon: -118.295 }, { lat: 34.006, lon: -118.294 }] },
+        { type: 'way', tags: { highway: 'residential', name: 'Elm St' }, geometry: [{ lat: 34.003, lon: -118.297 }, { lat: 34.004, lon: -118.296 }] },
+        { type: 'way', tags: { waterway: 'river' }, geometry: [{ lat: 34.001, lon: -118.298 }, { lat: 34.002, lon: -118.299 }] },
+        { type: 'way', tags: { highway: 'tertiary', name: 'Airdrome St' }, geometry: [{ lat: 34.007, lon: -118.293 }, { lat: 34.008, lon: -118.292 }] },
+        { type: 'way', tags: { highway: 'footway' }, geometry: [{ lat: 34.009, lon: -118.291 }, { lat: 34.010, lon: -118.290 }] },
+      ],
+    }),
+  });
+  // Overpass's public instance returns an XML error body (not JSON) on a
+  // gateway timeout — .json() on this throws a SyntaxError if called blindly,
+  // which is what actually happened in production (504 under load).
+  const gatewayTimeoutResponse = () => ({
+    ok: false,
+    status: 504,
+    json: () => Promise.reject(new SyntaxError("Unexpected token '<', \"<?xml vers\"... is not valid JSON")),
+  });
+
   beforeEach(() => {
-    global.fetch = vi.fn().mockResolvedValue({
-      json: () => Promise.resolve({
-        elements: [
-          { type: 'way', tags: { highway: 'primary', name: 'Main St' }, geometry: [{ lat: 34.005, lon: -118.295 }, { lat: 34.006, lon: -118.294 }] },
-          { type: 'way', tags: { highway: 'residential', name: 'Elm St' }, geometry: [{ lat: 34.003, lon: -118.297 }, { lat: 34.004, lon: -118.296 }] },
-          { type: 'way', tags: { waterway: 'river' }, geometry: [{ lat: 34.001, lon: -118.298 }, { lat: 34.002, lon: -118.299 }] },
-          { type: 'way', tags: { highway: 'tertiary', name: 'Airdrome St' }, geometry: [{ lat: 34.007, lon: -118.293 }, { lat: 34.008, lon: -118.292 }] },
-          { type: 'way', tags: { highway: 'footway' }, geometry: [{ lat: 34.009, lon: -118.291 }, { lat: 34.010, lon: -118.290 }] },
-        ],
-      }),
-    });
+    global.fetch = vi.fn().mockResolvedValue(okResponse());
   });
 
   afterEach(() => { vi.restoreAllMocks(); });
@@ -234,5 +245,21 @@ describe('fetchStreetGraph', () => {
     const [, options] = global.fetch.mock.calls[0];
     expect(options.body).toContain('motorway|trunk|primary|secondary|tertiary|residential|living_street|unclassified');
     expect(options.body).toContain('river|canal|stream');
+  });
+
+  it('falls back to the second Overpass endpoint when the first returns a non-ok status', async () => {
+    global.fetch = vi.fn()
+      .mockResolvedValueOnce(gatewayTimeoutResponse())
+      .mockResolvedValueOnce(okResponse());
+
+    const { hardLines, softLines } = await fetchStreetGraph(boundary);
+    expect(hardLines).toHaveLength(2);
+    expect(softLines).toHaveLength(3);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws a clear error when every Overpass endpoint fails', async () => {
+    global.fetch = vi.fn().mockResolvedValue(gatewayTimeoutResponse());
+    await expect(fetchStreetGraph(boundary)).rejects.toThrow();
   });
 });
