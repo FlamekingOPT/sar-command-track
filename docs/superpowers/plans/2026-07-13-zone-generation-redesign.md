@@ -455,8 +455,16 @@ describe('mergeBlocksToZones', () => {
   it('merges the two soft-adjacent pairs down to 2 zones, never crossing the hard divide', () => {
     const zones = mergeBlocksToZones(FOUR_BLOCKS, FOUR_ADJACENCY, 2);
     expect(zones).toHaveLength(2);
-    // each zone should be one full row (area 2), not one column
-    for (const z of zones) expect(turf.area(z)).toBeCloseTo(2, 5);
+    // each zone should span the full row (x: 0..2, 1 unit tall) — a row, not a column.
+    // (turf.area returns real geodesic m2, not planar "2", so bbox shape is the
+    // direct way to check this rather than an area magic number — caught when this
+    // assertion actually failed during execution: the original literal-2 comparison
+    // was wrong about what turf.area returns for degree-coordinate test fixtures.)
+    for (const z of zones) {
+      const [minX, minY, maxX, maxY] = turf.bbox(z);
+      expect(maxX - minX).toBeCloseTo(2, 5);
+      expect(maxY - minY).toBeCloseTo(1, 5);
+    }
   });
 
   it('stops early rather than crossing a hard adjacency', () => {

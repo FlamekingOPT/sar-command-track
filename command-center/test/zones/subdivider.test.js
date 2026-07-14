@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -186,5 +186,67 @@ describe('buildBlocks', () => {
 
   it('HARD_HIGHWAYS covers motorway/trunk/primary only', () => {
     expect(HARD_HIGHWAYS).toEqual(['motorway', 'trunk', 'primary']);
+  });
+});
+
+// Four unit squares in a 2x2 grid: [0][1] on top, [2][3] on bottom.
+// 0-1 and 2-3 are horizontally adjacent (soft); 0-2 and 1-3 are vertically
+// adjacent (hard) — mirrors a hard road running east-west through the middle.
+const SQ = (x, y) => turf.polygon([[[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]]]);
+const FOUR_BLOCKS = [SQ(0, 1), SQ(1, 1), SQ(0, 0), SQ(1, 0)];
+const FOUR_ADJACENCY = [
+  { a: 0, b: 1, hard: false },
+  { a: 2, b: 3, hard: false },
+  { a: 0, b: 2, hard: true },
+  { a: 1, b: 3, hard: true },
+];
+
+describe('mergeBlocksToZones', () => {
+  it('returns blocks unchanged when zoneCount >= block count', () => {
+    const zones = mergeBlocksToZones(FOUR_BLOCKS, FOUR_ADJACENCY, 4);
+    expect(zones).toHaveLength(4);
+  });
+
+  it('merges the two soft-adjacent pairs down to 2 zones, never crossing the hard divide', () => {
+    const zones = mergeBlocksToZones(FOUR_BLOCKS, FOUR_ADJACENCY, 2);
+    expect(zones).toHaveLength(2);
+    // each zone should span the full row (x: 0..2, 1 unit tall) — a row, not a column.
+    // (turf.area returns real geodesic m2, not planar "2", so bbox shape is the
+    // direct way to check this rather than an area magic number.)
+    for (const z of zones) {
+      const [minX, minY, maxX, maxY] = turf.bbox(z);
+      expect(maxX - minX).toBeCloseTo(2, 5);
+      expect(maxY - minY).toBeCloseTo(1, 5);
+    }
+  });
+
+  it('stops early rather than crossing a hard adjacency', () => {
+    // asking for 1 zone is impossible without crossing the hard divide
+    const zones = mergeBlocksToZones(FOUR_BLOCKS, FOUR_ADJACENCY, 1);
+    expect(zones).toHaveLength(2);
+  });
+
+  it('covers the same total area as the input blocks', () => {
+    const totalBefore = FOUR_BLOCKS.reduce((s, b) => s + turf.area(b), 0);
+    const zones = mergeBlocksToZones(FOUR_BLOCKS, FOUR_ADJACENCY, 2);
+    const totalAfter = zones.reduce((s, z) => s + turf.area(z), 0);
+    expect(totalAfter).toBeCloseTo(totalBefore, 5);
+  });
+
+  it('stops exactly at zoneCount on a long chain, not just when it runs out of soft edges', () => {
+    // Regression for a real bug found while verifying this plan: tracking the
+    // stop condition off the ever-growing clusters array (which never shrinks —
+    // every merge appends a new entry rather than removing the two old ones)
+    // instead of the live cluster count let a 6-block chain merge all the way
+    // down to 1 zone when 2 were asked for, because "clusters.length > zoneCount"
+    // stayed true long after only 2 zones actually remained.
+    const chainBlocks = [0, 1, 2, 3, 4, 5].map(x =>
+      turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]])
+    );
+    const chainAdjacency = [0, 1, 2, 3, 4].map(i => ({ a: i, b: i + 1, hard: false }));
+
+    expect(mergeBlocksToZones(chainBlocks, chainAdjacency, 2)).toHaveLength(2);
+    expect(mergeBlocksToZones(chainBlocks, chainAdjacency, 3)).toHaveLength(3);
+    expect(mergeBlocksToZones(chainBlocks, chainAdjacency, 6)).toHaveLength(6);
   });
 });

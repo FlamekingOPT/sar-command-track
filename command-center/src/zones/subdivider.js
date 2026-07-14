@@ -355,3 +355,44 @@ export function buildBlocks(boundary, hardLines, softLines) {
   }
   return { blocks, adjacency };
 }
+
+// Merge adjacent blocks smallest-combined-pair-first until zoneCount is reached.
+// Adjacency is tracked by contraction: an edge between two ORIGINAL block indices
+// becomes internal (skipped) once both indices map to the same current cluster —
+// no re-computation of geometry/lineOverlap is needed after the initial adjacency
+// from buildBlocks, since "hard" is a property of a specific real barrier segment
+// and survives any merge on either side of it unchanged.
+//
+// The stop condition tracks the LIVE cluster count (new Set(owner).size), not
+// clusters.length — clusters.length only ever grows (each merge appends a new
+// entry rather than removing the two it replaces), so checking it against
+// zoneCount stays true long after the real number of remaining zones has
+// already hit the target, over-merging past it whenever a soft edge happens to
+// still connect two live clusters (found via a 6-block chain regression test).
+export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
+  let clusters = blocks.map(poly => ({ poly, area: turf.area(poly) }));
+  let edges = adjacency.map(e => ({ ...e }));
+  let owner = blocks.map((_, i) => i);
+
+  while (new Set(owner).size > zoneCount) {
+    let best = null;
+    for (const e of edges) {
+      if (e.hard) continue;
+      const ci = owner[e.a], cj = owner[e.b];
+      if (ci === cj) continue;
+      const combined = clusters[ci].area + clusters[cj].area;
+      if (!best || combined < best.combined) best = { ci, cj, combined };
+    }
+    if (!best) break; // no soft-mergeable pair left — stop early, more zones than requested
+
+    const { ci, cj } = best;
+    const merged = turf.union(clusters[ci].poly, clusters[cj].poly);
+    const newIndex = clusters.length;
+    clusters = [...clusters, { poly: merged, area: turf.area(merged) }];
+    owner = owner.map(o => (o === ci || o === cj ? newIndex : o));
+    edges = edges.filter(e => owner[e.a] !== owner[e.b]);
+  }
+
+  const liveClusterIndices = [...new Set(owner)];
+  return liveClusterIndices.map(idx => clusters[idx].poly);
+}
