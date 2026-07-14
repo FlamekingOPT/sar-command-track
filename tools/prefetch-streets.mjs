@@ -72,7 +72,17 @@ async function fetchTile(bbox) {
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     const endpoint = ENDPOINTS[attempt % ENDPOINTS.length];
     try {
-      const resp = await fetch(endpoint, { method: 'POST', body: query(bbox) });
+      // Overpass etiquette for scripted access: identify yourself with a real
+      // User-Agent (default Node UA gets 406'd by overpass-api.de) and send
+      // the query as form data.
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'sar-command-track-prefetch/1.0 (SAR zone precompute; github.com/FlamekingOPT/sar-command-track)',
+        },
+        body: 'data=' + encodeURIComponent(query(bbox)),
+      });
       if (!resp.ok) throw new Error(`${endpoint} → ${resp.status}`);
       const data = await resp.json();
       if (!Array.isArray(data.elements)) throw new Error('malformed response');
