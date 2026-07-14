@@ -402,3 +402,27 @@ export function generateZones(boundary, zoneCount, hardLines, softLines) {
   if (!blocks.length) return [boundary];
   return mergeBlocksToZones(blocks, adjacency, zoneCount);
 }
+
+export async function fetchStreetGraph(boundary) {
+  const [west, south, east, north] = paddedBbox(boundary);
+  const query = `[out:json][timeout:25];
+(
+  way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|living_street|unclassified"](${south},${west},${north},${east});
+  way["waterway"~"river|canal|stream"](${south},${west},${north},${east});
+);
+out geom;`;
+
+  const resp = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: query });
+  const data = await resp.json();
+
+  const hardLines = [];
+  const softLines = [];
+  for (const el of data.elements) {
+    if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
+    const highway = el.tags?.highway;
+    const waterway = el.tags?.waterway;
+    const line = turf.lineString(el.geometry.map(pt => [pt.lon, pt.lat]), { name: el.tags?.name ?? '' });
+    (waterway || HARD_HIGHWAYS.includes(highway) ? hardLines : softLines).push(line);
+  }
+  return { hardLines, softLines };
+}

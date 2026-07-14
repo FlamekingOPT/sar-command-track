@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, fetchStreetGraph } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -279,5 +279,40 @@ describe('generateZones', () => {
     const zones = generateZones(GRID_BOUNDARY, 4, HARD_VERTICAL, SOFT_HORIZONTAL);
     const covered = zones.reduce((s, z) => s + turf.area(z), 0);
     expect(covered / turf.area(GRID_BOUNDARY)).toBeGreaterThan(0.999);
+  });
+});
+
+describe('fetchStreetGraph', () => {
+  const boundary = turf.polygon([[
+    [-118.30, 34.00], [-118.29, 34.00], [-118.29, 34.01], [-118.30, 34.01], [-118.30, 34.00],
+  ]]);
+
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({
+      json: () => Promise.resolve({
+        elements: [
+          { type: 'way', tags: { highway: 'primary', name: 'Main St' }, geometry: [{ lat: 34.005, lon: -118.295 }, { lat: 34.006, lon: -118.294 }] },
+          { type: 'way', tags: { highway: 'residential', name: 'Elm St' }, geometry: [{ lat: 34.003, lon: -118.297 }, { lat: 34.004, lon: -118.296 }] },
+          { type: 'way', tags: { waterway: 'river' }, geometry: [{ lat: 34.001, lon: -118.298 }, { lat: 34.002, lon: -118.299 }] },
+          { type: 'way', tags: { highway: 'tertiary', name: 'Airdrome St' }, geometry: [{ lat: 34.007, lon: -118.293 }, { lat: 34.008, lon: -118.292 }] },
+          { type: 'way', tags: { highway: 'footway' }, geometry: [{ lat: 34.009, lon: -118.291 }, { lat: 34.010, lon: -118.290 }] },
+        ],
+      }),
+    });
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('classifies motorway/trunk/primary and waterways as hard, everything else fetched as soft', async () => {
+    const { hardLines, softLines } = await fetchStreetGraph(boundary);
+    expect(hardLines).toHaveLength(2); // primary + river
+    expect(softLines).toHaveLength(3); // residential + tertiary + footway (see note below)
+  });
+
+  it('queries Overpass with a padded bbox and both barrier tiers', async () => {
+    await fetchStreetGraph(boundary);
+    const [, options] = global.fetch.mock.calls[0];
+    expect(options.body).toContain('motorway|trunk|primary|secondary|tertiary|residential|living_street|unclassified');
+    expect(options.body).toContain('river|canal|stream');
   });
 });
