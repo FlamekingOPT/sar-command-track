@@ -207,3 +207,18 @@ export function computeZoneCount(boundaryAreaM2, minutes, mode) {
   const targetAreaM2 = minutes * rate;
   return Math.max(1, Math.round(boundaryAreaM2 / targetAreaM2));
 }
+
+export const BOUNDARY_PAD_METERS = 300;
+
+// Blocks touching the real boundary's edge need their closing cross-street,
+// which can sit just outside it — pad the fetch/polygonize area so that street
+// is included, then clip back to the real boundary afterward (buildBlocks).
+export function paddedBbox(boundary, meters = BOUNDARY_PAD_METERS) {
+  const [west, south, east, north] = turf.bbox(boundary);
+  const km = meters / 1000;
+  const newWest = turf.destination([west, south], km, 270, { units: 'kilometers' }).geometry.coordinates[0];
+  const newSouth = turf.destination([west, south], km, 180, { units: 'kilometers' }).geometry.coordinates[1];
+  const newEast = turf.destination([east, north], km, 90, { units: 'kilometers' }).geometry.coordinates[0];
+  const newNorth = turf.destination([east, north], km, 0, { units: 'kilometers' }).geometry.coordinates[1];
+  return [newWest, newSouth, newEast, newNorth];
+}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -105,5 +105,34 @@ describe('computeZoneCount', () => {
 
   it('never returns less than 1 zone', () => {
     expect(computeZoneCount(10, 30, 'walked')).toBe(1);
+  });
+});
+
+describe('paddedBbox', () => {
+  const square = turf.polygon([[
+    [-118.30, 34.00], [-118.29, 34.00], [-118.29, 34.01], [-118.30, 34.01], [-118.30, 34.00],
+  ]]);
+
+  it('pads every side outward by ~BOUNDARY_PAD_METERS', () => {
+    const [west, south, east, north] = turf.bbox(square);
+    const [pWest, pSouth, pEast, pNorth] = paddedBbox(square);
+
+    const westPad = turf.distance([west, south], [pWest, south], { units: 'kilometers' }) * 1000;
+    const eastPad = turf.distance([east, south], [pEast, south], { units: 'kilometers' }) * 1000;
+    const southPad = turf.distance([west, south], [west, pSouth], { units: 'kilometers' }) * 1000;
+    const northPad = turf.distance([west, north], [west, pNorth], { units: 'kilometers' }) * 1000;
+
+    for (const pad of [westPad, eastPad, southPad, northPad]) {
+      expect(pad).toBeGreaterThan(BOUNDARY_PAD_METERS - 5);
+      expect(pad).toBeLessThan(BOUNDARY_PAD_METERS + 5);
+    }
+  });
+
+  it('accepts a custom pad distance', () => {
+    const [west, south] = turf.bbox(square);
+    const [pWest, pSouth] = paddedBbox(square, 100);
+    const westPad = turf.distance([west, south], [pWest, south], { units: 'kilometers' }) * 1000;
+    expect(westPad).toBeGreaterThan(95);
+    expect(westPad).toBeLessThan(105);
   });
 });
