@@ -12,7 +12,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, zones = [], tracks = [], liveMarkers = [] }) {
+export function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [] }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -24,8 +24,13 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, zones = 
   // leaving every overlay (boundary, zones, tracks) empty.
   const [mapLoaded, setMapLoaded] = useState(false);
 
+  const onBoundaryEditedRef = useRef(onBoundaryEdited);
+  const onBoundaryDeletedRef = useRef(onBoundaryDeleted);
+
   useEffect(() => { drawModeRef.current = drawMode; }, [drawMode]);
   useEffect(() => { onFeatureDrawnRef.current = onFeatureDrawn; }, [onFeatureDrawn]);
+  useEffect(() => { onBoundaryEditedRef.current = onBoundaryEdited; }, [onBoundaryEdited]);
+  useEffect(() => { onBoundaryDeletedRef.current = onBoundaryDeleted; }, [onBoundaryDeleted]);
 
   useEffect(() => {
     const map = new mapboxgl.Map({
@@ -84,9 +89,17 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, zones = 
       setMapLoaded(true); // sources + layers now exist — let the data effects push
     });
 
+    // No deleteAll after create: the boundaries/editable sync effect below
+    // reconciles Draw against the boundaries prop (stable feature ids make
+    // the echo-back idempotent); deleting here would wipe other boundaries.
     map.on('draw.create', e => {
       onFeatureDrawnRef.current?.(e.features[0]);
-      draw.deleteAll();
+    });
+    map.on('draw.update', e => {
+      for (const f of e.features) onBoundaryEditedRef.current?.({ id: String(f.id), geometry: f.geometry });
+    });
+    map.on('draw.delete', e => {
+      for (const f of e.features) onBoundaryDeletedRef.current?.(String(f.id));
     });
 
     mapRef.current = map;
@@ -100,15 +113,26 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, zones = 
     draw.changeMode(drawMode === 'idle' ? 'simple_select' : 'draw_polygon');
   }, [drawMode]);
 
+  // Boundaries live INSIDE Mapbox Draw while editable (giving click-to-select
+  // and vertex editing for free); on completed searches they render read-only
+  // on the plain geojson source. draw.set is idempotent — echoing the prop
+  // back after a create/update round-trips through the parent without flicker
+  // because feature ids are stable.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapLoaded) return;
-    map.getSource('boundary')?.setData(
-      boundary
-        ? turf.featureCollection([{ type: 'Feature', geometry: boundary, properties: {} }])
-        : turf.featureCollection([])
-    );
-  }, [boundary, mapLoaded]);
+    const draw = drawRef.current;
+    if (!map || !draw || !mapLoaded) return;
+    const features = boundaries.map(b => ({ type: 'Feature', id: b.id, geometry: b.geometry, properties: {} }));
+    if (editable) {
+      draw.set({ type: 'FeatureCollection', features });
+      map.getSource('boundary')?.setData(turf.featureCollection([]));
+    } else {
+      draw.set({ type: 'FeatureCollection', features: [] });
+      map.getSource('boundary')?.setData(turf.featureCollection(
+        boundaries.map(b => ({ type: 'Feature', geometry: b.geometry, properties: {} }))
+      ));
+    }
+  }, [boundaries, editable, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;
