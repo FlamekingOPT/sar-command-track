@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
+import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
-import { fetchOSMBarriers, subdivideWithBarriers, subdivideZone } from '../zones/subdivider';
+import { fetchStreetGraph, computeZoneCount, generateZones } from '../zones/subdivider';
 import { createZone, updateZoneStatus, watchZones } from '../firebase/zones';
-import { updateSearchBoundary, updateSearchLetterZones, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
+import { updateSearchBoundary, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
 
 const DAY_ID = 'day-1';
@@ -13,11 +14,10 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [searchStatus, setSearchStatus] = useState('setup');
   const [drawMode, setDrawMode] = useState('idle');
   const [boundary, setBoundary] = useState(null);
-  const [zoneCount, setZoneCount] = useState(4);
+  const [searchMinutes, setSearchMinutes] = useState(30);
+  const [searchMode, setSearchMode] = useState('walked');
   const [generatingZones, setGeneratingZones] = useState(false);
   const [generatingStatus, setGeneratingStatus] = useState('');
-  const [osmBarriers, setOsmBarriers] = useState([]);
-  const [letterZones, setLetterZones] = useState([]);
   const [zones, setZones] = useState([]);
   const [tracks, setTracks] = useState([]);
   const [liveMarkers, setLiveMarkers] = useState([]);
@@ -35,34 +35,17 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       if (search.name) setSearchName(search.name);
       if (search.status) setSearchStatus(search.status);
       if (search.boundary) setBoundary(search.boundary);
-      if (search.letterZones?.length) {
-        setLetterZones(search.letterZones.map(z => ({
-          letter: z.letter,
-          feature: { type: 'Feature', geometry: z.geometry, properties: {} },
-        })));
-      }
     });
   }, [searchId]);
 
   const readOnly = searchStatus === 'complete';
 
-  async function handleFeatureDrawn(feature, type) {
+  async function handleFeatureDrawn(feature) {
     if (readOnly) return;
     setDrawMode('idle');
     try {
-      if (type === 'boundary') {
-        setBoundary(feature.geometry);
-        await updateSearchBoundary(searchId, feature.geometry);
-      } else {
-        const letter = String.fromCharCode(65 + letterZones.length); // A, B, C…
-        const updated = [...letterZones, { letter, feature }];
-        setLetterZones(updated);
-        await updateSearchLetterZones(searchId, updated);
-        const subZones = subdivideZone(feature, 4);
-        for (let i = 0; i < subZones.length; i++) {
-          await createZone(searchId, DAY_ID, { letter, number: i + 1, polygon: subZones[i].geometry });
-        }
-      }
+      setBoundary(feature.geometry);
+      await updateSearchBoundary(searchId, feature.geometry);
     } catch (err) {
       console.error('handleFeatureDrawn failed:', err);
     }
@@ -74,31 +57,15 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
     try {
       const boundaryFeature = { type: 'Feature', geometry: boundary, properties: {} };
 
-      setGeneratingStatus('Fetching roads & waterways…');
-      let barriers = [];
-      try {
-        barriers = await fetchOSMBarriers(boundaryFeature);
-        setOsmBarriers(barriers);
-      } catch (e) {
-        console.warn('OSM fetch failed, using grid:', e);
-      }
+      setGeneratingStatus('Fetching street network…');
+      const { hardLines, softLines } = await fetchStreetGraph(boundaryFeature);
 
       setGeneratingStatus('Generating zones…');
-      const letterPolygons = barriers.length
-        ? subdivideWithBarriers(boundaryFeature, zoneCount, barriers)
-        : subdivideZone(boundaryFeature, zoneCount);
+      const zoneCount = computeZoneCount(turf.area(boundaryFeature), searchMinutes, searchMode);
+      const zonePolygons = generateZones(boundaryFeature, zoneCount, hardLines, softLines);
 
-      const newLetterZones = letterPolygons.map((poly, i) => ({
-        letter: String.fromCharCode(65 + i),
-        feature: poly,
-      }));
-      setLetterZones(newLetterZones);
-      await updateSearchLetterZones(searchId, newLetterZones);
-      for (const { letter, feature } of newLetterZones) {
-        const subZones = subdivideZone(feature, 4);
-        for (let i = 0; i < subZones.length; i++) {
-          await createZone(searchId, DAY_ID, { letter, number: i + 1, polygon: subZones[i].geometry });
-        }
+      for (let i = 0; i < zonePolygons.length; i++) {
+        await createZone(searchId, DAY_ID, { number: i + 1, polygon: zonePolygons[i].geometry });
       }
     } catch (err) {
       console.error('handleGenerateZones failed:', err);
@@ -133,13 +100,20 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         )}
 
         {/* Step 2: generate zones */}
-        {searchStatus === 'setup' && boundary && letterZones.length === 0 && (
+        {searchStatus === 'setup' && boundary && zones.length === 0 && (
           <>
-            <span style={{ fontSize: 13, opacity: 0.7 }}>Step 2: How many zones?</span>
+            <span style={{ fontSize: 13, opacity: 0.7 }}>Step 2: Search time & mode</span>
             <input
-              type="number" min={1} max={26} value={zoneCount}
-              onChange={e => setZoneCount(Number(e.target.value))}
+              type="number" min={5} max={240} value={searchMinutes}
+              onChange={e => setSearchMinutes(Number(e.target.value))}
               style={{ width: 52, padding: '3px 6px', background: '#334155', border: 'none', color: '#f8fafc', borderRadius: 4 }} />
+            <span style={{ fontSize: 13, opacity: 0.7 }}>min</span>
+            <select
+              value={searchMode} onChange={e => setSearchMode(e.target.value)}
+              style={{ padding: '3px 6px', background: '#334155', border: 'none', color: '#f8fafc', borderRadius: 4 }}>
+              <option value="walked">Walked</option>
+              <option value="driven">Driven</option>
+            </select>
             <button
               onClick={handleGenerateZones}
               disabled={generatingZones}
@@ -150,7 +124,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         )}
 
         {/* Step 3: send out */}
-        {searchStatus === 'setup' && letterZones.length > 0 && (
+        {searchStatus === 'setup' && zones.length > 0 && (
           <button
             onClick={async () => { await publishSearch(searchId); }}
             style={{ background: '#22c55e', padding: '4px 12px', fontWeight: 700 }}>
@@ -179,9 +153,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           drawMode={readOnly ? 'idle' : drawMode}
           onFeatureDrawn={handleFeatureDrawn}
           boundary={boundary}
-          letterZones={letterZones}
-          subZones={zones}
-          osmBarriers={osmBarriers}
+          zones={zones}
           tracks={tracks}
           liveMarkers={liveMarkers}
         />
