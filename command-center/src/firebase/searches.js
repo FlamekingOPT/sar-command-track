@@ -1,12 +1,13 @@
 import { collection, doc, addDoc, updateDoc, deleteDoc, getDocs, query, where, writeBatch, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { db } from './config';
 import { generateSearchCode } from '../search/searchCode';
+import { parseBoundaries } from '../search/boundaries';
 
 const DAY_ID = 'day-1';
 
 export async function createSearch({ name, date }) {
   const ref = await addDoc(collection(db, 'searches'), {
-    name, date, status: 'setup', createdAt: serverTimestamp(), boundary: null,
+    name, date, status: 'setup', createdAt: serverTimestamp(), boundaries: null,
     code: generateSearchCode(),
   });
   return { id: ref.id };
@@ -14,6 +15,10 @@ export async function createSearch({ name, date }) {
 
 export async function updateSearchBoundary(searchId, boundary) {
   await updateDoc(doc(db, 'searches', searchId), { boundary: JSON.stringify(boundary) });
+}
+
+export async function updateSearchBoundaries(searchId, boundaries) {
+  await updateDoc(doc(db, 'searches', searchId), { boundaries: JSON.stringify(boundaries) });
 }
 
 export async function publishSearch(searchId) {
@@ -56,10 +61,13 @@ export function watchSearch(searchId, cb) {
   return onSnapshot(doc(db, 'searches', searchId), snap => {
     if (!snap.exists()) return;
     const data = snap.data();
+    const boundaries = parseBoundaries(data);
     cb({
       id: snap.id,
       ...data,
-      boundary: data.boundary ? JSON.parse(data.boundary) : null,
+      boundaries,
+      // legacy field kept until SearchDetail switches over (Task 7 removes it)
+      boundary: boundaries[0]?.geometry ?? null,
     });
   });
 }
