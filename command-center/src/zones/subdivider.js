@@ -195,3 +195,15 @@ function lengthInsidePoly(line, polygon) {
       : 0;
   } catch { return 0; }
 }
+
+// §1.3 of the design spec — one searcher walking a residential block (3 mph,
+// 20m effective sweep width) vs. a vehicle slow-rolling residential streets
+// (20 mph, 20m sweep width).
+export const WALKED_RATE_M2_PER_MIN = 1609;
+export const DRIVEN_RATE_M2_PER_MIN = 10729;
+
+export function computeZoneCount(boundaryAreaM2, minutes, mode) {
+  const rate = mode === 'driven' ? DRIVEN_RATE_M2_PER_MIN : WALKED_RATE_M2_PER_MIN;
+  const targetAreaM2 = minutes * rate;
+  return Math.max(1, Math.round(boundaryAreaM2 / targetAreaM2));
+}

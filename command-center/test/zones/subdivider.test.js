@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone, subdivideWithBarriers } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -79,5 +79,31 @@ describe('subdivideWithBarriers', () => {
     const smallShare = Math.min(...zones.map(z => turf.area(z))) / turf.area(SQUARE);
     expect(smallShare).toBeGreaterThan(0.1);
     expect(smallShare).toBeLessThan(0.4);
+  });
+});
+
+describe('computeZoneCount', () => {
+  it('exposes the validated per-minute coverage rates', () => {
+    expect(WALKED_RATE_M2_PER_MIN).toBe(1609);
+    expect(DRIVEN_RATE_M2_PER_MIN).toBe(10729);
+  });
+
+  it('divides boundary area by the walked rate for walked mode', () => {
+    const boundaryArea = 30 * WALKED_RATE_M2_PER_MIN * 5; // exactly 5 zones' worth
+    expect(computeZoneCount(boundaryArea, 30, 'walked')).toBe(5);
+  });
+
+  it('divides boundary area by the driven rate for driven mode', () => {
+    const boundaryArea = 20 * DRIVEN_RATE_M2_PER_MIN * 3; // exactly 3 zones' worth
+    expect(computeZoneCount(boundaryArea, 20, 'driven')).toBe(3);
+  });
+
+  it('rounds to the nearest whole zone', () => {
+    // 30 * 1609 = 48270 m2 per zone; 3.4 zones' worth rounds to 3
+    expect(computeZoneCount(48270 * 3.4, 30, 'walked')).toBe(3);
+  });
+
+  it('never returns less than 1 zone', () => {
+    expect(computeZoneCount(10, 30, 'walked')).toBe(1);
   });
 });
