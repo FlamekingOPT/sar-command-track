@@ -34,7 +34,10 @@ export function SearchRow({ search, onOpen }) {
     }}>
       <div style={{ flex: 1 }}>
         <div style={{ fontWeight: 700 }}>{search.name}</div>
-        <div style={{ fontSize: 12, color: '#6b7280' }}>{search.date}</div>
+        <div style={{ fontSize: 12, color: '#6b7280' }}>
+          {search.date}
+          {search.code && <span style={{ fontFamily: 'monospace', marginLeft: 8 }}>· Bind: {search.code}</span>}
+        </div>
       </div>
       <StatusPill status={search.status} />
       {search.inviteLink && (
@@ -42,7 +45,7 @@ export function SearchRow({ search, onOpen }) {
           Copy Invite Link
         </button>
       )}
-      {search.groupChatId && (
+      {search.status !== 'complete' && (
         <button onClick={handleCopyPicker} style={{ background: '#334155', padding: '4px 10px', fontSize: 12 }}>
           Copy Picker Link
         </button>

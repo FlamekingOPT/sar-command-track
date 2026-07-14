@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { parseToken } from './firebase/token';
 import { resolveLink } from './firebase/links';
 import { getZone, watchZone } from './firebase/zones';
-import { enqueue } from './gps/offlineQueue';
+import { enqueue, linkKeyOf } from './gps/offlineQueue';
 import { startSync, flushOnce } from './gps/sync';
 import { useGpsTracking } from './gps/useGpsTracking';
 import { SearcherMap } from './map/SearcherMap';
@@ -30,7 +30,8 @@ export default function App() {
   const [localMarkers, setLocalMarkers] = useState([]);
   const startedRef = useRef(false);
 
-  const { points, error: gpsError, retry } = useGpsTracking(state === 'ready');
+  const linkKey = linkKeyOf(link);
+  const { points, error: gpsError, retry } = useGpsTracking(state === 'ready', linkKey);
 
   // Resolve token → link → zone
   useEffect(() => {
@@ -58,7 +59,7 @@ export default function App() {
     const stopSync = startSync(link);
     if (!startedRef.current) {
       startedRef.current = true;
-      if (zone?.status === 'assigned') enqueue('status', { status: 'in_progress' });
+      if (zone?.status === 'assigned') enqueue('status', { status: 'in_progress' }, linkKey);
     }
     return () => { stopWatch(); stopSync(); };
   }, [state, link]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -68,7 +69,7 @@ export default function App() {
 
   function handleSaveMarker(note) {
     const marker = { lat: pinLocation.lat, lng: pinLocation.lng, note };
-    enqueue('marker', marker);
+    enqueue('marker', marker, linkKey);
     setLocalMarkers(prev => [...prev, marker]);
     setPinLocation(null);
   }
@@ -78,7 +79,7 @@ export default function App() {
   // if the write is rejected; offline, the queue still delivers it later).
   async function handleStatusChange(status) {
     setZone(z => ({ ...z, status }));
-    await enqueue('status', { status });
+    await enqueue('status', { status }, linkKey);
     flushOnce(link).catch(() => {});
   }
 

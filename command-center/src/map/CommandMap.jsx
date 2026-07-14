@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import * as turf from '@turf/turf';
@@ -18,6 +18,11 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
   const drawRef = useRef(null);
   const drawModeRef = useRef(drawMode);
   const onFeatureDrawnRef = useRef(onFeatureDrawn);
+  // State (not a ref/isStyleLoaded check) so the data effects below re-run once
+  // the map + sources are ready. Firestore data usually arrives before the map
+  // finishes loading; without this the effects return early and never retry,
+  // leaving every overlay (boundary, zones, tracks) empty.
+  const [mapLoaded, setMapLoaded] = useState(false);
 
   useEffect(() => { drawModeRef.current = drawMode; }, [drawMode]);
   useEffect(() => { onFeatureDrawnRef.current = onFeatureDrawn; }, [onFeatureDrawn]);
@@ -98,6 +103,8 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
           'text-offset': [0, 0.8],
         },
         paint: { 'text-color': '#991b1b', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+
+      setMapLoaded(true); // sources + layers now exist — let the data effects push
     });
 
     map.on('draw.create', e => {
@@ -108,7 +115,7 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
 
     mapRef.current = map;
     drawRef.current = draw;
-    return () => map.remove();
+    return () => { setMapLoaded(false); map.remove(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -119,42 +126,42 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
+    if (!map || !mapLoaded) return;
     map.getSource('boundary')?.setData(
       boundary
         ? turf.featureCollection([{ type: 'Feature', geometry: boundary, properties: {} }])
         : turf.featureCollection([])
     );
-  }, [boundary]);
+  }, [boundary, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
+    if (!map || !mapLoaded) return;
     map.getSource('letter-zones')?.setData(
       turf.featureCollection(letterZones.map(z => ({ ...z.feature, properties: { letter: z.letter } })))
     );
-  }, [letterZones]);
+  }, [letterZones, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
+    if (!map || !mapLoaded) return;
     map.getSource('osm-barriers')?.setData(turf.featureCollection(osmBarriers));
-  }, [osmBarriers]);
+  }, [osmBarriers, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
+    if (!map || !mapLoaded) return;
     map.getSource('sub-zones')?.setData(
       turf.featureCollection(subZones.map(z => ({
         type: 'Feature', geometry: z.polygon,
         properties: { label: `${z.letter}${z.number}`, color: STATUS_COLORS[z.status] ?? '#9ca3af' },
       })))
     );
-  }, [subZones]);
+  }, [subZones, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
+    if (!map || !mapLoaded) return;
     const lines = tracks
       .filter(t => t.points?.length >= 2)
       .map(t => turf.lineString(t.points.map(p => [p.lng, p.lat]), { volunteerId: t.volunteerId }));
@@ -166,15 +173,15 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundary = null, letterZo
         { volunteerId: t.volunteerId }
       ));
     map.getSource('searcher-positions')?.setData(turf.featureCollection(positions));
-  }, [tracks]);
+  }, [tracks, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map?.isStyleLoaded()) return;
+    if (!map || !mapLoaded) return;
     map.getSource('live-markers')?.setData(
       turf.featureCollection(liveMarkers.map(m => turf.point([m.lng, m.lat], { note: m.note ?? '' })))
     );
-  }, [liveMarkers]);
+  }, [liveMarkers, mapLoaded]);
 
   return <div ref={containerRef} style={{ flex: 1, height: '100%' }} />;
 }
