@@ -74,24 +74,37 @@ and water are hard.)
    the drawn search boundary **expanded by ~300m** on every side. A block touching the real
    boundary's edge needs its closing cross-street for `polygonize` to close that face, and that
    street can sit just outside the boundary itself.
-2. **Node the graph.** Clip every fetched way to the padded bbox (`turf.bboxClip`) so endpoints
-   land exactly on its edge, snap all coordinates to ~11cm precision (round to 6 decimal
-   degrees), and drop degenerate edges (<1m long) and exact-duplicate edges (same two endpoints
-   either direction). `turf.polygonize`'s edge-ring assembly is brittle against near-duplicate
-   floating-point coordinates and duplicate edges between the same two nodes — both cause it to
-   throw (`Each LinearRing of a Polygon must have 4 or more Positions`) or silently misbehave.
-3. **Polygonize into blocks.** Add the padded boundary's own ring as one more edge, run
+2. **Node the graph.** Clip every fetched way to the padded bbox (`turf.bboxClip`), snap all
+   coordinates to ~11cm precision (round to 6 decimal degrees), and drop degenerate edges (<1m
+   long) and exact-duplicate edges (same two endpoints either direction). `turf.polygonize`'s
+   edge-ring assembly is brittle against near-duplicate floating-point coordinates and duplicate
+   edges between the same two nodes — both cause it to throw (`Each LinearRing of a Polygon must
+   have 4 or more Positions`) or silently misbehave.
+
+   `turf.polygonize` also never auto-nodes a line endpoint that lands in the *middle* of another
+   line — a clipped street's endpoint sits exactly on the padded bbox's edge, but a plain
+   4-corner bbox ring has no vertex there, so that street silently fails to close against the
+   ring at all (confirmed directly: a boundary ring plus a single line touching its edge
+   mid-span produces 1 face, not a split). The padded boundary edge must therefore be built as a
+   ring whose vertex list is the 4 corners **plus every point where a clipped street touches
+   it**, sorted around the perimeter — not a plain `turf.bboxPolygon` ring.
+3. **Polygonize into blocks.** Add that noded padded-boundary ring as one more edge, run
    `turf.polygonize` on the full edge set, and keep the resulting faces whose centroid falls
-   inside the padded boundary. Discard any face above ~100,000 m² outright — `polygonize` can
-   emit a spurious face spanning most/all of the padded bbox when the street network doesn't
-   fully close into small loops (dangling ends); no real city block in dense residential terrain
-   comes anywhere close to that size.
-4. **Clip back to the real boundary.** Intersect (`turf.intersect`) every kept block against
-   the actual drawn boundary (not the padded one). Interior blocks pass through unchanged;
-   blocks straddling the real edge get trimmed to their portion inside it. This is the step
-   that makes coverage of the real boundary hit 100% — skipping the pad-then-clip and just
-   fetching/polygonizing the exact boundary directly leaves real gaps near the edge (validated:
-   61.8% coverage without the pad, 100% with it).
+   inside the padded boundary.
+4. **Clip back to the real boundary, then size-check.** Intersect (`turf.intersect`) every kept
+   face against the actual drawn boundary (not the padded one) *before* applying any size
+   sanity check — a face's padded, pre-clip area is inflated by however much of the boundary pad
+   it happens to include, so checking size before clipping rejects legitimate blocks (found
+   while validating this exact code: a real ~28,000 m² block came out ~218,000 m² pre-clip on a
+   small test boundary, well past a 200,000 m² cap that was meant to catch only the
+   whole-padded-area spurious face). After clipping, drop anything still above ~200,000 m² —
+   `polygonize` can emit a spurious face spanning most/all of the padded bbox when the street
+   network doesn't fully close into small loops (dangling ends); no real city block in dense
+   residential terrain comes anywhere close to that size even before clipping. Interior blocks
+   pass through the clip unchanged; blocks straddling the real edge get trimmed to their portion
+   inside it. This pad-clip-filter ordering is what makes coverage of the real boundary hit
+   100% — skipping the pad-then-clip and just fetching/polygonizing the exact boundary directly
+   leaves real gaps near the edge (validated: 61.8% coverage without the pad, 100% with it).
 5. **Build block adjacency.** For every pair of blocks, find their shared border via
    `turf.lineOverlap(polygonToLine(a), polygonToLine(b), {tolerance: 0.003})` (3m tolerance).
    Ignore touches under 3m (corner-touching, not a real shared edge). Classify the adjacency
