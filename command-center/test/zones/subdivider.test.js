@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones } from '../../src/zones/subdivider.js';
+import { subdivideZone, subdivideWithBarriers, computeZoneCount, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones } from '../../src/zones/subdivider.js';
 
 const SQUARE = turf.polygon([[
   [-118.25, 34.05], [-118.20, 34.05], [-118.20, 34.10],
@@ -248,5 +248,36 @@ describe('mergeBlocksToZones', () => {
     expect(mergeBlocksToZones(chainBlocks, chainAdjacency, 2)).toHaveLength(2);
     expect(mergeBlocksToZones(chainBlocks, chainAdjacency, 3)).toHaveLength(3);
     expect(mergeBlocksToZones(chainBlocks, chainAdjacency, 6)).toHaveLength(6);
+  });
+});
+
+describe('generateZones', () => {
+  it('produces exactly zoneCount zones when the graph supports it', () => {
+    const zones = generateZones(GRID_BOUNDARY, 4, HARD_VERTICAL, SOFT_HORIZONTAL);
+    expect(zones).toHaveLength(4);
+  });
+
+  it('merges down to 2 zones split exactly along the hard road', () => {
+    const zones = generateZones(GRID_BOUNDARY, 2, HARD_VERTICAL, SOFT_HORIZONTAL);
+    expect(zones).toHaveLength(2);
+    const centroidXs = zones.map(z => turf.centroid(z).geometry.coordinates[0]).sort((a, b) => a - b);
+    expect(centroidXs[0]).toBeLessThan(0.0015);
+    expect(centroidXs[1]).toBeGreaterThan(0.0015);
+  });
+
+  it('stops early at 2 zones when asked for 1 (would require crossing the hard road)', () => {
+    const zones = generateZones(GRID_BOUNDARY, 1, HARD_VERTICAL, SOFT_HORIZONTAL);
+    expect(zones).toHaveLength(2);
+  });
+
+  it('falls back to a single whole-boundary zone with no street data at all', () => {
+    const zones = generateZones(GRID_BOUNDARY, 3, [], []);
+    expect(zones).toHaveLength(1);
+  });
+
+  it('covers 100% of the boundary', () => {
+    const zones = generateZones(GRID_BOUNDARY, 4, HARD_VERTICAL, SOFT_HORIZONTAL);
+    const covered = zones.reduce((s, z) => s + turf.area(z), 0);
+    expect(covered / turf.area(GRID_BOUNDARY)).toBeGreaterThan(0.999);
   });
 });

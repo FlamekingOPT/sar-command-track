@@ -396,3 +396,9 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
   const liveClusterIndices = [...new Set(owner)];
   return liveClusterIndices.map(idx => clusters[idx].poly);
 }
+
+export function generateZones(boundary, zoneCount, hardLines, softLines) {
+  const { blocks, adjacency } = buildBlocks(boundary, hardLines, softLines);
+  if (!blocks.length) return [boundary];
+  return mergeBlocksToZones(blocks, adjacency, zoneCount);
+}
