@@ -1,30 +1,17 @@
 import { useState, useEffect, useMemo } from 'react';
 import { getSearch } from '../firebase/searches';
 import { watchZones } from '../firebase/zones';
-import { claimZone } from './claimZone';
+import { claimZone, ASSIGNABLE } from './claimZone';
 import { getIdentity, saveName } from './identity';
 import { PickMap } from './PickMap';
 
 // Day management arrives in Plan 4; until then the whole system uses one fixed day.
 const DAY_ID = 'day-1';
 
-function letterAvailability(zones) {
-  const byLetter = zones.reduce((acc, z) => {
-    (acc[z.letter] ??= []).push(z);
-    return acc;
-  }, {});
-  return Object.fromEntries(
-    Object.entries(byLetter).map(([letter, lzones]) => [
-      letter,
-      lzones.some(z => z.status === 'unassigned' || z.status === 'needs_re_search') ? 'available' : 'full',
-    ])
-  );
-}
-
 export function PickPage({ searchId }) {
   const [search, setSearch] = useState(undefined); // undefined = loading, null = not found
   const [zones, setZones] = useState([]);
-  const [pendingLetter, setPendingLetter] = useState(null);
+  const [pendingZone, setPendingZone] = useState(null);
   const [nameInput, setNameInput] = useState('');
   const [claiming, setClaiming] = useState(false);
   const [requestStatus, setRequestStatus] = useState(null);
@@ -41,15 +28,13 @@ export function PickPage({ searchId }) {
   if (search === undefined) return <p style={{ padding: 24 }}>Loading…</p>;
   if (search === null) return <p style={{ padding: 24 }}>This search link isn't valid.</p>;
 
-  const availability = letterAvailability(zones);
-
-  async function submitRequest(letter, name) {
+  async function submitRequest(zone, name) {
     setRequestError(null);
     setRequestStatus(null);
     setClaiming(true);
     try {
       const token = await claimZone({
-        searchId: search.id, dayId: DAY_ID, letter, zones, volunteerId: identity.id, name,
+        searchId: search.id, dayId: DAY_ID, zoneId: zone.id, volunteerId: identity.id, name,
       });
       if (!token) { setRequestStatus('no_availability'); setClaiming(false); return; }
       window.location.href = `/s/${token}`;
@@ -59,18 +44,19 @@ export function PickPage({ searchId }) {
     }
   }
 
-  function handleTapLetter(letter) {
-    if (availability[letter] !== 'available') return;
-    if (!identity.name) { setPendingLetter(letter); return; }
-    submitRequest(letter, identity.name);
+  function handleTapZone(zoneId) {
+    const zone = zones.find(z => z.id === zoneId);
+    if (!zone || !ASSIGNABLE.includes(zone.status)) return;
+    if (!identity.name) { setPendingZone(zone); return; }
+    submitRequest(zone, identity.name);
   }
 
   function handleNameSubmit(e) {
     e.preventDefault();
     if (!nameInput.trim()) return;
     saveName(nameInput.trim());
-    submitRequest(pendingLetter, nameInput.trim());
-    setPendingLetter(null);
+    submitRequest(pendingZone, nameInput.trim());
+    setPendingZone(null);
   }
 
   if (claiming) {
@@ -79,7 +65,7 @@ export function PickPage({ searchId }) {
 
   return (
     <div style={{ position: 'relative', height: '100%' }}>
-      <PickMap letterZones={search.letterZones} availability={availability} onZoneClick={handleTapLetter} />
+      <PickMap zones={zones} onZoneClick={handleTapZone} />
 
       <div style={{
         position: 'fixed', top: 12, left: 12, right: 12, zIndex: 10,
@@ -104,7 +90,7 @@ export function PickPage({ searchId }) {
         )}
       </div>
 
-      {pendingLetter && (
+      {pendingZone && (
         <form onSubmit={handleNameSubmit} style={{
           position: 'fixed', bottom: 16, left: 16, right: 16, zIndex: 10,
           background: '#fff', borderRadius: 12, padding: 16,
@@ -112,7 +98,7 @@ export function PickPage({ searchId }) {
         }}>
           <p style={{ marginBottom: 8, fontWeight: 600 }}>What's your name?</p>
           <input value={nameInput} onChange={e => setNameInput(e.target.value)} placeholder="First Last" autoFocus />
-          <button type="submit" style={{ marginTop: 10, width: '100%' }}>Join Zone {pendingLetter}</button>
+          <button type="submit" style={{ marginTop: 10, width: '100%' }}>Join Zone {pendingZone.number}</button>
         </form>
       )}
     </div>

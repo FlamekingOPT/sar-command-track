@@ -9,7 +9,9 @@ const EMPTY = turf.featureCollection([]);
 const AVAILABLE_COLOR = '#22c55e';
 const FULL_COLOR = '#9ca3af';
 
-export function PickMap({ letterZones, availability, onZoneClick }) {
+const ASSIGNABLE_STATUSES = ['unassigned', 'needs_re_search'];
+
+export function PickMap({ zones, onZoneClick }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const onZoneClickRef = useRef(onZoneClick);
@@ -21,9 +23,9 @@ export function PickMap({ letterZones, availability, onZoneClick }) {
   useEffect(() => { onZoneClickRef.current = onZoneClick; }, [onZoneClick]);
 
   useEffect(() => {
-    const zonesWithGeometry = letterZones.filter(z => z.geometry);
+    const zonesWithGeometry = zones.filter(z => z.polygon);
     const fc = turf.featureCollection(
-      zonesWithGeometry.map(z => ({ type: 'Feature', geometry: z.geometry, properties: { letter: z.letter } }))
+      zonesWithGeometry.map(z => ({ type: 'Feature', geometry: z.polygon, properties: { id: z.id } }))
     );
     const bbox = fc.features.length ? turf.bbox(fc) : undefined;
     const map = new mapboxgl.Map({
@@ -44,13 +46,13 @@ export function PickMap({ letterZones, availability, onZoneClick }) {
       });
       map.addLayer({
         id: 'zones-labels', type: 'symbol', source: 'zones',
-        layout: { 'text-field': ['get', 'letter'], 'text-size': 24, 'text-allow-overlap': true },
+        layout: { 'text-field': ['get', 'number'], 'text-size': 20, 'text-allow-overlap': true },
         paint: { 'text-color': '#111827', 'text-halo-color': '#ffffff', 'text-halo-width': 2 },
       });
 
       map.on('click', 'zones-fill', e => {
-        const letter = e.features[0]?.properties?.letter;
-        if (letter) onZoneClickRef.current?.(letter);
+        const id = e.features[0]?.properties?.id;
+        if (id) onZoneClickRef.current?.(id);
       });
       map.on('mouseenter', 'zones-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', 'zones-fill', () => { map.getCanvas().style.cursor = ''; });
@@ -67,17 +69,18 @@ export function PickMap({ letterZones, availability, onZoneClick }) {
     if (!map || !mapLoaded) return;
     map.getSource('zones')?.setData(
       turf.featureCollection(
-        letterZones.filter(z => z.geometry).map(z => ({
+        zones.filter(z => z.polygon).map(z => ({
           type: 'Feature',
-          geometry: z.geometry,
+          geometry: z.polygon,
           properties: {
-            letter: z.letter,
-            color: availability[z.letter] === 'available' ? AVAILABLE_COLOR : FULL_COLOR,
+            id: z.id,
+            number: z.number,
+            color: ASSIGNABLE_STATUSES.includes(z.status) ? AVAILABLE_COLOR : FULL_COLOR,
           },
         }))
       )
     );
-  }, [letterZones, availability, mapLoaded]);
+  }, [zones, mapLoaded]);
 
   return <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />;
 }
