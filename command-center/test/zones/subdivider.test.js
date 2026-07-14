@@ -171,6 +171,39 @@ describe('mergeBlocksToZones', () => {
   });
 });
 
+describe('mergeBlocksToZones — equal block count (density-varying zone sizes)', () => {
+  // A row of 8 soft-adjacent blocks: six 1-unit-wide "downtown" blocks followed
+  // by two 4-unit-wide "hillside" blocks. Equal-AREA merging packs the small
+  // blocks together long before touching the big ones; equal-BLOCK-COUNT
+  // merging must yield 4 zones of 2 blocks each — three small zones covering
+  // the dense side, one big zone covering the sparse side.
+  const widths = [1, 1, 1, 1, 1, 1, 4, 4];
+  const xs = widths.reduce((acc, w) => [...acc, acc[acc.length - 1] + w], [0]);
+  const rowBlocks = widths.map((w, i) =>
+    turf.polygon([[[xs[i], 0], [xs[i + 1], 0], [xs[i + 1], 1], [xs[i], 1], [xs[i], 0]]])
+  );
+  const rowAdjacency = [0, 1, 2, 3, 4, 5, 6].map(i => ({ a: i, b: i + 1, hard: false }));
+
+  it('balances block count per zone: dense side gets small zones, sparse side big ones', () => {
+    const zones = mergeBlocksToZones(rowBlocks, rowAdjacency, 4);
+    expect(zones).toHaveLength(4);
+    const zoneWidths = zones
+      .map(z => { const b = turf.bbox(z); return b[2] - b[0]; })
+      .sort((a, b) => a - b);
+    expect(zoneWidths[0]).toBeCloseTo(2, 5);
+    expect(zoneWidths[1]).toBeCloseTo(2, 5);
+    expect(zoneWidths[2]).toBeCloseTo(2, 5);
+    expect(zoneWidths[3]).toBeCloseTo(8, 5);
+  });
+
+  it('still covers 100% of the input area', () => {
+    const before = rowBlocks.reduce((s, b) => s + turf.area(b), 0);
+    const zones = mergeBlocksToZones(rowBlocks, rowAdjacency, 4);
+    const after = zones.reduce((s, z) => s + turf.area(z), 0);
+    expect(after / before).toBeCloseTo(1, 3);
+  });
+});
+
 describe('generateZones', () => {
   it('produces exactly zoneCount zones when the graph supports it', () => {
     const zones = generateZones(GRID_BOUNDARY, 4, HARD_VERTICAL, SOFT_HORIZONTAL);

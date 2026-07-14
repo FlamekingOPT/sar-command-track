@@ -160,45 +160,61 @@ export function buildBlocks(boundary, hardLines, softLines) {
   return { blocks, adjacency };
 }
 
-// Merge adjacent blocks smallest-combined-pair-first until zoneCount is reached.
-// Adjacency is tracked by contraction: an edge between two ORIGINAL block indices
-// becomes internal (skipped) once both indices map to the same current cluster —
-// no re-computation of geometry/lineOverlap is needed after the initial adjacency
-// from buildBlocks, since "hard" is a property of a specific real barrier segment
-// and survives any merge on either side of it unchanged.
+// Divide blocks among zoneCount zones with EQUAL BLOCK COUNT per zone, by
+// seeded region-growing: each zone BFS-grows through soft adjacency until it
+// holds ceil(unassigned / zonesRemaining) blocks. Balancing block count
+// instead of area is what makes zone sizes track density: dense areas have
+// many small blocks, so equal-count zones come out physically small there and
+// physically large in sparse areas — the block graph is itself the density
+// signal, no extra data needed (2026-07-14 spec).
 //
-// The stop condition tracks the LIVE cluster count (new Set(owner).size), not
-// clusters.length — clusters.length only ever grows (each merge appends a new
-// entry rather than removing the two it replaces), so checking it against
-// zoneCount stays true long after the real number of remaining zones has
-// already hit the target, over-merging past it whenever a soft edge happens to
-// still connect two live clusters (found via a 6-block chain regression test).
+// Region-growing rather than pairwise cluster merging is deliberate: greedy
+// smallest-pair-first merging strands single blocks between already-grown
+// neighbors (an 8-block chain asked for 4 zones came out 3/1/2/2 — which pair
+// merges first among equal-area candidates even came down to float noise in
+// turf.area). Growing every zone to an explicit per-zone target makes balance
+// hold by construction and keeps the result deterministic.
+//
+// Hard edges (motorway/trunk/primary, waterways) are simply absent from the
+// adjacency lists, so a zone can never grow across one. When hard roads box a
+// region in before it reaches its target, the region closes early and the
+// remaining blocks form extra zones — same "more zones than requested rather
+// than crossing a hard road" semantics as always.
 export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
-  let clusters = blocks.map(poly => ({ poly, area: turf.area(poly) }));
-  let edges = adjacency.map(e => ({ ...e }));
-  let owner = blocks.map((_, i) => i);
-
-  while (new Set(owner).size > zoneCount) {
-    let best = null;
-    for (const e of edges) {
-      if (e.hard) continue;
-      const ci = owner[e.a], cj = owner[e.b];
-      if (ci === cj) continue;
-      const combined = clusters[ci].area + clusters[cj].area;
-      if (!best || combined < best.combined) best = { ci, cj, combined };
-    }
-    if (!best) break; // no soft-mergeable pair left — stop early, more zones than requested
-
-    const { ci, cj } = best;
-    const merged = turf.union(clusters[ci].poly, clusters[cj].poly);
-    const newIndex = clusters.length;
-    clusters = [...clusters, { poly: merged, area: turf.area(merged) }];
-    owner = owner.map(o => (o === ci || o === cj ? newIndex : o));
-    edges = edges.filter(e => owner[e.a] !== owner[e.b]);
+  if (!blocks.length) return [];
+  const neighbors = blocks.map(() => []);
+  for (const e of adjacency) {
+    if (e.hard) continue;
+    neighbors[e.a].push(e.b);
+    neighbors[e.b].push(e.a);
   }
 
-  const liveClusterIndices = [...new Set(owner)];
-  return liveClusterIndices.map(idx => clusters[idx].poly);
+  const assigned = new Array(blocks.length).fill(false);
+  const regions = [];
+  let unassigned = blocks.length;
+  while (unassigned > 0) {
+    const zonesRemaining = Math.max(1, zoneCount - regions.length);
+    const target = Math.ceil(unassigned / zonesRemaining);
+    const seed = assigned.indexOf(false);
+    const region = [seed];
+    assigned[seed] = true;
+    const queue = [seed];
+    while (region.length < target && queue.length) {
+      const cur = queue.shift();
+      for (const nb of neighbors[cur]) {
+        if (assigned[nb] || region.length >= target) continue;
+        assigned[nb] = true;
+        region.push(nb);
+        queue.push(nb);
+      }
+    }
+    unassigned -= region.length;
+    regions.push(region);
+  }
+
+  return regions.map(region =>
+    region.slice(1).reduce((poly, i) => turf.union(poly, blocks[i]), blocks[region[0]])
+  );
 }
 
 export function generateZones(boundary, zoneCount, hardLines, softLines) {
