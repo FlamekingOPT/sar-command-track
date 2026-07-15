@@ -155,7 +155,12 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
             },
           });
           setGeneratingStatus(`Building blocks…${label}`);
-          const { blocks, adjacency } = buildBlocks(t.feature, hardLines, softLines);
+          // The "implausibly big block" artifact filter must scale with zone
+          // size: at coarse LOD, real blocks between major roads are km-scale.
+          // 4× the expected zone area keeps every legitimate block while still
+          // dropping polygonize leaks.
+          const maxBlockAreaM2 = Math.max(200_000, (areaM2 / estAlloc) * 4);
+          const { blocks, adjacency } = buildBlocks(t.feature, hardLines, softLines, { maxBlockAreaM2 });
           built.push({ ...t, blocks, adjacency });
         } catch (err) {
           // Street data unavailable (no cache tile, live Overpass down) —

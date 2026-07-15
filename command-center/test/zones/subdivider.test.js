@@ -286,3 +286,33 @@ describe('orderZonesForNumbering', () => {
     for (const p of shuffled) expect(ordered).toContain(p);
   });
 });
+
+describe('buildBlocks at coarse detail (large legitimate blocks)', () => {
+  // At district/city LOD only major roads are fetched, so real blocks are
+  // km-scale — far past the old hard-coded 0.2 km² "implausible" cap that was
+  // tuned for full residential detail. Regression for a field bug: a Beverly
+  // Hills boundary at city detail produced only sliver-confetti zones because
+  // every real block was discarded as "too big".
+  const BIG = turf.polygon([[[0, 0], [0.03, 0], [0.03, 0.03], [0, 0.03], [0, 0]]]); // ~3.3km square
+  const HARD_V = [
+    turf.lineString([[0.015, -0.01], [0.015, 0.015]]),
+    turf.lineString([[0.015, 0.015], [0.015, 0.04]]),
+  ];
+  const SOFT_H = [
+    turf.lineString([[-0.01, 0.015], [0.015, 0.015]]),
+    turf.lineString([[0.015, 0.015], [0.04, 0.015]]),
+  ];
+
+  it('discards km-scale blocks under the default cap (documents the old behavior)', () => {
+    const { blocks } = buildBlocks(BIG, HARD_V, SOFT_H);
+    expect(blocks.length).toBe(0);
+  });
+
+  it('keeps km-scale blocks when maxBlockAreaM2 is raised for coarse detail', () => {
+    const quadrantArea = turf.area(BIG) / 4;
+    const { blocks } = buildBlocks(BIG, HARD_V, SOFT_H, { maxBlockAreaM2: quadrantArea * 4 });
+    expect(blocks).toHaveLength(4);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
+  });
+});

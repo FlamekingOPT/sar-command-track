@@ -174,7 +174,14 @@ function sharedAdjacency(polyA, polyB, hardLines) {
   return { hard: minD < HARD_BARRIER_TOLERANCE_M };
 }
 
-export function buildBlocks(boundary, hardLines, softLines) {
+// maxBlockAreaM2 rejects polygonize artifacts (faces leaking past real
+// streets), but it MUST scale with detail level: the 0.2 km² default suits
+// full residential detail, while district/city LOD produces legitimately
+// km-scale blocks between major roads. A Beverly Hills field test at city
+// detail once discarded every real block and kept only sliver-confetti
+// because this cap was hard-coded — callers using coarse detail must pass a
+// cap sized to their expected zone area.
+export function buildBlocks(boundary, hardLines, softLines, { maxBlockAreaM2 = MAX_PLAUSIBLE_BLOCK_AREA_M2 } = {}) {
   const { edges, bbox } = buildEdgeSet(boundary, hardLines, softLines);
   const paddedBoundary = turf.bboxPolygon(bbox);
   const rawFaces = turf.polygonize(turf.featureCollection(edges));
@@ -188,7 +195,7 @@ export function buildBlocks(boundary, hardLines, softLines) {
     // size cap applies AFTER clipping — a face's pre-clip (padded) area is
     // inflated by whatever pad it happens to include, so checking before
     // clipping rejects legitimate blocks (found while validating this code)
-    .filter(f => f && turf.area(f) > 1 && turf.area(f) < MAX_PLAUSIBLE_BLOCK_AREA_M2);
+    .filter(f => f && turf.area(f) > 1 && turf.area(f) < maxBlockAreaM2);
 
   const adjacency = [];
   for (let i = 0; i < blocks.length; i++) {
