@@ -207,28 +207,33 @@ export function buildBlocks(boundary, hardLines, softLines, { maxBlockAreaM2 = M
   return { blocks, adjacency };
 }
 
-// Divide blocks among zoneCount zones with EQUAL BLOCK COUNT per zone, by
-// seeded region-growing: each zone BFS-grows through soft adjacency until it
-// holds ceil(unassigned / zonesRemaining) blocks. Balancing block count
-// instead of area is what makes zone sizes track density: dense areas have
-// many small blocks, so equal-count zones come out physically small there and
-// physically large in sparse areas — the block graph is itself the density
-// signal, no extra data needed (2026-07-14 spec).
+// Divide blocks among zoneCount zones by seeded region-growing, balancing a
+// blended "search effort" weight per zone: effort = area^BLOCK_EFFORT_EXPONENT.
+// Pure block COUNT (exponent 0) let two mega-blocks form one monster zone next
+// to sliver zones when block sizes varied 100x (Hancock Park field bug); pure
+// AREA (exponent 1) is the old uniform model that ignores density. The square
+// root sits between: dense areas still get smaller zones, but a block 100x
+// larger only counts 10x more, which bounds the size spread.
 //
 // Region-growing rather than pairwise cluster merging is deliberate: greedy
 // smallest-pair-first merging strands single blocks between already-grown
-// neighbors (an 8-block chain asked for 4 zones came out 3/1/2/2 — which pair
-// merges first among equal-area candidates even came down to float noise in
-// turf.area). Growing every zone to an explicit per-zone target makes balance
-// hold by construction and keeps the result deterministic.
+// neighbors, steered by float noise in equal-area tie-breaks. Growing every
+// zone to an explicit per-zone target keeps balance and determinism.
 //
-// Hard edges (motorway/trunk/primary, waterways) are simply absent from the
-// adjacency lists, so a zone can never grow across one. When hard roads box a
-// region in before it reaches its target, the region closes early and the
-// remaining blocks form extra zones — same "more zones than requested rather
-// than crossing a hard road" semantics as always.
+// Hard edges (motorway/trunk/primary, waterways) are absent from the adjacency
+// lists, so a zone can never grow across one; hard-boxed regions close early
+// and the remainder forms extra zones ("more zones than requested rather than
+// crossing a hard road", as always).
+//
+// Finally, runt zones — dramatically lighter than average, i.e. the sliver
+// confetti command explicitly doesn't want — are absorbed into their lightest
+// soft-adjacent neighbor, even if that lands under the requested count.
+export const BLOCK_EFFORT_EXPONENT = 0.5;
+const RUNT_FRACTION = 0.25;
+
 export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
   if (!blocks.length) return [];
+  const weights = blocks.map(b => Math.pow(turf.area(b), BLOCK_EFFORT_EXPONENT));
   const neighbors = blocks.map(() => []);
   for (const e of adjacency) {
     if (e.hard) continue;
@@ -238,30 +243,71 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
 
   const assigned = new Array(blocks.length).fill(false);
   const regions = [];
+  let remainingWeight = weights.reduce((s, w) => s + w, 0);
   let unassigned = blocks.length;
   while (unassigned > 0) {
     const zonesRemaining = Math.max(1, zoneCount - regions.length);
-    const target = Math.ceil(unassigned / zonesRemaining);
+    const target = remainingWeight / zonesRemaining;
+    // never grow so far that the remaining zones can't get a block each —
+    // float noise in geodesic areas otherwise lets a region overshoot its
+    // weight target by one block and starve the last zone
+    const maxBlocks = unassigned - (zonesRemaining - 1);
     const seed = assigned.indexOf(false);
-    const region = [seed];
+    const region = { blocks: [seed], weight: weights[seed] };
     assigned[seed] = true;
     const queue = [seed];
-    while (region.length < target && queue.length) {
+    while (region.weight < target && region.blocks.length < maxBlocks && queue.length) {
       const cur = queue.shift();
       for (const nb of neighbors[cur]) {
-        if (assigned[nb] || region.length >= target) continue;
+        if (assigned[nb] || region.weight >= target || region.blocks.length >= maxBlocks) continue;
         assigned[nb] = true;
-        region.push(nb);
+        region.blocks.push(nb);
+        region.weight += weights[nb];
         queue.push(nb);
       }
     }
-    unassigned -= region.length;
+    remainingWeight -= region.weight;
+    unassigned -= region.blocks.length;
     regions.push(region);
   }
 
-  return regions.map(region =>
-    region.slice(1).reduce((poly, i) => turf.union(poly, blocks[i]), blocks[region[0]])
-  );
+  // Runt absorption. Threshold is fixed from the initial average so the loop
+  // terminates and results don't depend on absorption order.
+  const regionOf = new Array(blocks.length);
+  regions.forEach((r, ri) => r.blocks.forEach(b => { regionOf[b] = ri; }));
+  const softEdges = adjacency.filter(e => !e.hard);
+  const runtThreshold = (regions.reduce((s, r) => s + r.weight, 0) / regions.length) * RUNT_FRACTION;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let ri = 0; ri < regions.length; ri++) {
+      const r = regions[ri];
+      if (r.dead || r.weight >= runtThreshold) continue;
+      let bestIdx = -1;
+      for (const e of softEdges) {
+        const ra = regionOf[e.a], rb = regionOf[e.b];
+        if (ra === rb) continue;
+        const other = ra === ri ? rb : rb === ri ? ra : -1;
+        if (other !== -1 && !regions[other].dead
+            && (bestIdx === -1 || regions[other].weight < regions[bestIdx].weight)) {
+          bestIdx = other;
+        }
+      }
+      if (bestIdx !== -1) {
+        const host = regions[bestIdx];
+        host.blocks.push(...r.blocks);
+        host.weight += r.weight;
+        r.blocks.forEach(b => { regionOf[b] = bestIdx; });
+        r.dead = true;
+        r.blocks = [];
+        changed = true;
+      }
+    }
+  }
+
+  return regions
+    .filter(r => !r.dead)
+    .map(r => r.blocks.slice(1).reduce((poly, i) => turf.union(poly, blocks[i]), blocks[r.blocks[0]]));
 }
 
 export function generateZones(boundary, zoneCount, hardLines, softLines) {

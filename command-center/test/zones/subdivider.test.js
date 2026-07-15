@@ -195,12 +195,12 @@ describe('mergeBlocksToZones', () => {
   });
 });
 
-describe('mergeBlocksToZones — equal block count (density-varying zone sizes)', () => {
+describe('mergeBlocksToZones — blended effort (density-varying zone sizes)', () => {
   // A row of 8 soft-adjacent blocks: six 1-unit-wide "downtown" blocks followed
-  // by two 4-unit-wide "hillside" blocks. Equal-AREA merging packs the small
-  // blocks together long before touching the big ones; equal-BLOCK-COUNT
-  // merging must yield 4 zones of 2 blocks each — three small zones covering
-  // the dense side, one big zone covering the sparse side.
+  // by two 4-unit-wide "hillside" blocks. Blended effort (area^0.5) groups the
+  // dense side into 3-block zones while each huge block stands alone —
+  // density-varying sizes WITHOUT the monster-zone blowup that pure
+  // block-count balancing produced (2 huge blocks = one 8-wide zone).
   const widths = [1, 1, 1, 1, 1, 1, 4, 4];
   const xs = widths.reduce((acc, w) => [...acc, acc[acc.length - 1] + w], [0]);
   const rowBlocks = widths.map((w, i) =>
@@ -208,16 +208,16 @@ describe('mergeBlocksToZones — equal block count (density-varying zone sizes)'
   );
   const rowAdjacency = [0, 1, 2, 3, 4, 5, 6].map(i => ({ a: i, b: i + 1, hard: false }));
 
-  it('balances block count per zone: dense side gets small zones, sparse side big ones', () => {
+  it('groups dense small blocks together while huge blocks stand alone', () => {
     const zones = mergeBlocksToZones(rowBlocks, rowAdjacency, 4);
     expect(zones).toHaveLength(4);
     const zoneWidths = zones
       .map(z => { const b = turf.bbox(z); return b[2] - b[0]; })
       .sort((a, b) => a - b);
-    expect(zoneWidths[0]).toBeCloseTo(2, 5);
-    expect(zoneWidths[1]).toBeCloseTo(2, 5);
-    expect(zoneWidths[2]).toBeCloseTo(2, 5);
-    expect(zoneWidths[3]).toBeCloseTo(8, 5);
+    expect(zoneWidths[0]).toBeCloseTo(3, 5);
+    expect(zoneWidths[1]).toBeCloseTo(3, 5);
+    expect(zoneWidths[2]).toBeCloseTo(4, 5);
+    expect(zoneWidths[3]).toBeCloseTo(4, 5);
   });
 
   it('still covers 100% of the input area', () => {
@@ -314,5 +314,45 @@ describe('buildBlocks at coarse detail (large legitimate blocks)', () => {
     expect(blocks).toHaveLength(4);
     const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
     expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
+  });
+});
+
+describe('mergeBlocksToZones — bounded size variance and runt absorption', () => {
+  const SQW = (x, w) => turf.polygon([[[x, 0], [x + w, 0], [x + w, 1], [x, 1], [x, 0]]]);
+
+  it('does not let one zone dwarf the others when block sizes vary wildly', () => {
+    // 6 small (1-wide) + 2 huge (4-wide) blocks in a soft chain, 4 zones.
+    // Pure block-count balancing pairs the two huge blocks into one 8-wide
+    // monster zone (field bug: "1 massive zone + slivers"). Blended effort
+    // must keep each huge block as its own zone instead.
+    const widths = [1, 1, 1, 1, 1, 1, 4, 4];
+    const xs = widths.reduce((acc, w) => [...acc, acc[acc.length - 1] + w], [0]);
+    const blocks = widths.map((w, i) => SQW(xs[i], w));
+    const adj = [0, 1, 2, 3, 4, 5, 6].map(i => ({ a: i, b: i + 1, hard: false }));
+    const zones = mergeBlocksToZones(blocks, adj, 4);
+    expect(zones).toHaveLength(4);
+    const zw = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
+    expect(zw[3]).toBeLessThanOrEqual(4.01); // no zone wider than a single huge block
+    expect(zw[0]).toBeGreaterThanOrEqual(2.99); // dense side groups small blocks
+  });
+
+  it('absorbs sliver zones into a soft neighbor instead of emitting them', () => {
+    // two normal blocks + one tiny sliver, 3 zones requested: a sliver-only
+    // zone is exactly what command does NOT want — expect 2 zones, the sliver
+    // folded into a neighbor.
+    const blocks = [SQW(0, 1), SQW(1, 1), SQW(2, 0.01)];
+    const adj = [{ a: 0, b: 1, hard: false }, { a: 1, b: 2, hard: false }];
+    const zones = mergeBlocksToZones(blocks, adj, 3);
+    expect(zones).toHaveLength(2);
+    const total = blocks.reduce((s, b) => s + turf.area(b), 0);
+    const covered = zones.reduce((s, z) => s + turf.area(z), 0);
+    expect(covered / total).toBeCloseTo(1, 3);
+  });
+
+  it('never absorbs across a hard road even for slivers', () => {
+    const blocks = [SQW(0, 1), SQW(1, 0.01)];
+    const adj = [{ a: 0, b: 1, hard: true }];
+    const zones = mergeBlocksToZones(blocks, adj, 2);
+    expect(zones).toHaveLength(2); // sliver stays separate — hard road is absolute
   });
 });
