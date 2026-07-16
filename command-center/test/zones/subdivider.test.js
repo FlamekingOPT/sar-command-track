@@ -146,6 +146,27 @@ describe('buildBlocks', () => {
     expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
   });
 
+  it('keeps an isolated thin-but-real-area sliver instead of erasing it (real park coverage gap)', () => {
+    // Field bug (2026-07-16 screenshot, a Kenneth Hahn / Baldwin Hills-style
+    // park): a winding internal path carved off an elongated meadow lobe with
+    // a low width/perimeter ratio (mean width under MIN_BLOCK_MEAN_WIDTH_M)
+    // but real, non-negligible area — and because it had no bboxesTouch
+    // neighbor to merge into, dissolveSlivers's final filter DROPPED it
+    // outright. That's real searchable ground vanishing from the map, not
+    // just an oddly-sized zone. dissolveSlivers must only fold slivers into a
+    // neighbor when one exists; an isolated one — however thin by the width
+    // metric — must be KEPT (not deleted) so its area survives into a zone.
+    const thinLobe = turf.polygon([[
+      [0, 0], [0.002, 0], [0.002, 0.00016], [0.02, 0.00016], [0.02, 0], [0.022, 0], [0.022, 0.00032], [0, 0.00032], [0, 0],
+    ]]); // ~2.2km long, ~20m mean width (2*area/perimeter) — under the 25m
+        // sliver cutoff, but 51,500 m² of real area, not a negligible artifact
+    expect(turf.area(thinLobe)).toBeGreaterThan(50_000); // not a negligible artifact
+    // no other blocks at all — nothing for it to merge into
+    const { blocks } = buildBlocks(thinLobe, [], []);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(thinLobe)).toBeGreaterThan(0.999);
+  });
+
   it('dissolves a dual-carriageway median sliver into a neighbor block', () => {
     // Two parallel hard lines ~22m apart — a divided road. The strip between
     // the centerlines polygonizes into a face no searcher can be assigned
@@ -574,28 +595,31 @@ describe('mergeBlocksToZones — bounded size variance and runt absorption', () 
     for (const z of zones) expect(z.geometry.type).toBe('Polygon');
   });
 
-  it('drops a tiny zone that touches nothing instead of merging it into a distant host', () => {
-    // Field bug follow-up: the nearest-centroid fallback unioned a detached
-    // sliver into a zone it never touched, producing a multi-part zone whose
-    // number rendered on every part (duplicate "13"s on the map). A tiny zone
-    // with no geometric neighbor is an artifact — drop it, never teleport it.
+  it('keeps a tiny zone standing (not merged, not dropped) when it touches nothing', () => {
+    // Field bug history: the nearest-centroid fallback used to union a
+    // detached sliver into a zone it never touched (duplicate "13"s field
+    // bug) — fixed by not merging. Then dropping it outright erased real
+    // area (2026-07-16 park-lobe field bug) — a tiny zone with no geometric
+    // neighbor is neither teleported NOR deleted; it stands as its own zone.
     const blocks = [SQW(0, 1), SQW(3, 0.01)]; // gap between them — nothing shared
     const zones = mergeBlocksToZones(blocks, [], 2);
-    expect(zones).toHaveLength(1);
-    expect(turf.area(zones[0]) / turf.area(blocks[0])).toBeCloseTo(1, 3);
+    expect(zones).toHaveLength(2);
+    const total = blocks.reduce((s, b) => s + turf.area(b), 0);
+    const covered = zones.reduce((s, z) => s + turf.area(z), 0);
+    expect(covered / total).toBeCloseTo(1, 3);
   });
 
-  it('drops a tiny zone that only touches a neighbor at a single point (no real edge)', () => {
+  it('keeps a zone standing rather than union-merging a single-point touch into a MultiPolygon', () => {
     // Two squares meeting only at a shared corner point pass booleanIntersects
     // but have zero shared EDGE length — turf.union of a point-touch returns a
     // MultiPolygon (Westlake field regression: multiPart went 0 -> 1 after
-    // adding this sweep). A point-touch must be treated as "touches nothing"
-    // and dropped, not unioned.
+    // adding this sweep). A point-touch must be treated as "no safe merge
+    // target": leave both zones standing, not unioned, not dropped.
     const tiny = turf.polygon([[[1, 1], [1.01, 1], [1.01, 1.01], [1, 1.01], [1, 1]]]);
     const big = SQW(0, 1); // corner (1,1) touches tiny's corner (1,1) — point only
     const zones = mergeBlocksToZones([big, tiny], [], 2);
-    expect(zones).toHaveLength(1);
-    expect(zones[0].geometry.type).toBe('Polygon');
+    expect(zones).toHaveLength(2);
+    for (const z of zones) expect(z.geometry.type).toBe('Polygon');
   });
 
   it('folds a graph-isolated runt into its geometric neighbor when adjacency missed the touch', () => {

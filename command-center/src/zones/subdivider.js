@@ -179,6 +179,21 @@ function sharedAdjacency(polyA, polyB, hardLines) {
 // medians and interchange gores run 10–25m; real searchable blocks are 40m+.
 const MIN_BLOCK_MEAN_WIDTH_M = 25;
 
+// Absolute-area floor for an isolated (no merge partner) thin block. Width
+// alone can't distinguish real territory from noise — a winding park path can
+// carve off an elongated but substantial-area meadow lobe (real ground, must
+// be kept), while true polygonize noise (near-duplicate/self-touching edges)
+// is reliably tiny in absolute terms. 500 m² is a 10x25m patch — far below
+// any real search-worthy area, far below the ~51,500 m² park-lobe case this
+// exists to protect. Dropping only these keeps the isolated-sliver population
+// small: at full LOD, NOT dropping any isolated thin block (regardless of
+// area) let hundreds of genuine micro-fragments survive into zone-building,
+// where the sliver-merge sweep could cascade — a multi-part union re-injects
+// small parts that are themselves still "tiny", producing new merge attempts
+// faster than it resolves them (field bug 2026-07-16: Westlake, 174 zones,
+// mergeBlocksToZones never returned).
+const MIN_ISOLATED_SLIVER_AREA_M2 = 500;
+
 function meanWidthM(poly) {
   try {
     const perimM = turf.length(turf.polygonToLine(poly), { units: 'kilometers' }) * 1000;
@@ -197,13 +212,39 @@ function bboxesTouch(ba, bb) {
   return ba[0] <= bb[2] && bb[0] <= ba[2] && ba[1] <= bb[3] && bb[1] <= ba[3];
 }
 
+// turf.union (polygon-clipping) can throw "Unable to complete output ring" on
+// a genuinely malformed polygonize artifact (self-touching/degenerate ring) —
+// hit in the field once isolated slivers stopped being silently dropped
+// (2026-07-16). NEVER let a merge failure erase area: turf.combine just
+// concatenates the two shapes into a MultiPolygon without dissolving their
+// shared edge — no boolean topology math, so it doesn't fail the same way.
+// The existing "split any MultiPolygon into separate zones" step downstream
+// turns the un-dissolved parts into their own zone(s) — one extra zone beats
+// a crash or a silent coverage gap.
+function safeUnion(a, b) {
+  try { return turf.union(a, b); }
+  catch {
+    try { return turf.combine(turf.featureCollection([a, b])).features[0]; }
+    catch { return a; }
+  }
+}
+
 // Dual carriageways polygonize the strip between their centerlines into a
 // sliver face no searcher can be assigned (Beverly Hills field bug: median
 // slivers surviving as zones, then getting relabeled onto distant hosts).
 // Dissolving them at the BLOCK level — into the neighbor sharing the longest
 // border, repeating so median chains fold outward — keeps graph connectivity
 // across soft dual carriageways, so zones can still merge over a divided
-// secondary road. Slivers that touch nothing are artifacts and are dropped.
+// secondary road. A sliver with NO neighbor to fold into is kept as its own
+// block, NOT dropped by width alone: mean width (2·area/perimeter) catches
+// elongated shapes generally, but a winding park path can carve off a
+// low-width lobe that still has real, non-negligible area — dropping it
+// erased searchable ground from the map outright (field bug 2026-07-16, a
+// park with internal trails). It's only dropped if its AREA is also
+// negligible (MIN_ISOLATED_SLIVER_AREA_M2) — true polygonize noise, not real
+// territory; keeping every isolated thin fragment regardless of area let
+// hundreds of full-LOD micro-fragments survive into zone-building, where
+// merging them could cascade (see that constant's comment).
 function dissolveSlivers(faces) {
   const blocks = [...faces];
   const bboxes = blocks.map(b => turf.bbox(b));
@@ -235,7 +276,7 @@ function dissolveSlivers(faces) {
       } catch { /* keep both; the zone-level sweep still catches it */ }
     }
   }
-  return blocks.filter(b => meanWidthM(b) >= MIN_BLOCK_MEAN_WIDTH_M);
+  return blocks.filter(b => meanWidthM(b) >= MIN_BLOCK_MEAN_WIDTH_M || turf.area(b) >= MIN_ISOLATED_SLIVER_AREA_M2);
 }
 
 // Refine any block whose street effort alone exceeds this multiple of the
@@ -532,7 +573,7 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {
 
   let polys = regions
     .filter(r => !r.dead)
-    .map(r => r.blocks.slice(1).reduce((poly, i) => turf.union(poly, blocks[i]), blocks[r.blocks[0]]));
+    .map(r => r.blocks.slice(1).reduce((poly, i) => safeUnion(poly, blocks[i]), blocks[r.blocks[0]]));
 
   // A zone must be ONE contiguous polygon — a multi-part zone renders its
   // number on every detached part (duplicate "13"s field bug). Multi-parts
@@ -546,10 +587,14 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {
   // sharedAdjacency's lineOverlap tolerance can miss a real touch on thin
   // diagonal slivers, leaving a graph-isolated runt that no absorption pass
   // above could reach. Final geometric sweep: fold any still-tiny zone into
-  // the zone it shares the most border with (nearest centroid as fallback).
-  // Each fold removes one zone, so this terminates.
+  // the zone it shares the most border with. Each successful fold removes one
+  // zone; a zone with no real-edge neighbor is left standing (its own small
+  // zone) rather than dropped — dropping erased real searchable area (field
+  // bug 2026-07-16: a park lobe vanished from the map), so `settled` tracks
+  // "already confirmed unmergeable" to keep this loop terminating.
+  const settled = new Set();
   while (polys.length > 1) {
-    const idx = polys.findIndex(p => turf.area(p) < areaThreshold);
+    const idx = polys.findIndex(p => turf.area(p) < areaThreshold && !settled.has(p));
     if (idx === -1) break;
     const tiny = polys[idx];
     const rest = polys.filter((_, i) => i !== idx);
@@ -568,21 +613,27 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {
       if (len > bestLen) { bestLen = len; best = i; }
     }
     if (best === -1) {
-      // touches nothing by a real edge — an artifact, not territory.
-      // Dropping beats merging into a distant host: a detached union renders
-      // as a multi-part zone whose number appears on every part
-      // (duplicate-label field bug).
-      polys = rest;
+      // touches nothing by a real edge — no safe merge target. Keep it
+      // standing rather than erase real area; mark settled so the loop
+      // doesn't re-select it forever.
+      settled.add(tiny);
       continue;
     }
-    let union;
-    try { union = turf.union(rest[best], tiny); } catch { break; }
+    const union = safeUnion(rest[best], tiny);
     // safety net: even a real-edge union can occasionally return a
-    // MultiPolygon (topology edge cases) — keep only the largest part rather
-    // than let a multi-part zone escape.
-    rest[best] = union.geometry.type === 'MultiPolygon'
-      ? turf.polygon(union.geometry.coordinates.reduce((a, b) => (turf.area(turf.polygon(a)) >= turf.area(turf.polygon(b)) ? a : b)))
-      : union;
+    // MultiPolygon (topology edge cases). Split it rather than keep-only-the-
+    // largest-part — that used to discard the smaller part's real area, the
+    // same class of bug this whole fix is about. The smaller parts rejoin
+    // `polys` and get evaluated on the next pass like anything else.
+    if (union.geometry.type === 'MultiPolygon') {
+      const parts = [...union.geometry.coordinates]
+        .map(c => turf.polygon(c))
+        .sort((a, b) => turf.area(b) - turf.area(a));
+      rest[best] = parts[0];
+      rest.push(...parts.slice(1));
+    } else {
+      rest[best] = union;
+    }
     polys = rest;
   }
   return polys;
