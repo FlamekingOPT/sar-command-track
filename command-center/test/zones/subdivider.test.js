@@ -349,10 +349,71 @@ describe('mergeBlocksToZones — bounded size variance and runt absorption', () 
     expect(covered / total).toBeCloseTo(1, 3);
   });
 
-  it('never absorbs across a hard road even for slivers', () => {
+  it('absorbs a hard-isolated sliver across the hard edge as a last resort', () => {
+    // Field bug (2026-07-15, Beverly Hills / West Adams, 25 requested → 38 built):
+    // dual-carriageway medians and hard-road corner cutoffs polygonize into
+    // slivers walled by hard edges on EVERY side. With absorption restricted to
+    // soft edges they survived as confetti zones. A median strip is a polygonize
+    // artifact, not searchable territory — folding it across the carriageway is
+    // right; "never cross a hard road" still holds for every non-runt zone.
     const blocks = [SQW(0, 1), SQW(1, 0.01)];
     const adj = [{ a: 0, b: 1, hard: true }];
     const zones = mergeBlocksToZones(blocks, adj, 2);
-    expect(zones).toHaveLength(2); // sliver stays separate — hard road is absolute
+    expect(zones).toHaveLength(1);
+    const total = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(turf.area(zones[0]) / total).toBeCloseTo(1, 3);
+  });
+
+  it('prefers a soft neighbor over a hard one when absorbing a sliver', () => {
+    // sliver B sits between A (soft edge) and C (hard edge) — it must fold
+    // into A, leaving C untouched across the hard road.
+    const blocks = [SQW(0, 1), SQW(1, 0.01), SQW(1.01, 1)];
+    const adj = [
+      { a: 0, b: 1, hard: false },
+      { a: 1, b: 2, hard: true },
+    ];
+    const zones = mergeBlocksToZones(blocks, adj, 3);
+    expect(zones).toHaveLength(2);
+    const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
+    expect(widths[0]).toBeCloseTo(1, 3);    // C alone
+    expect(widths[1]).toBeCloseTo(1.01, 3); // A + sliver
+  });
+
+  it('absorbs a sliver CLUSTER whose sqrt-inflated effort weight dodges the weight check', () => {
+    // sqrt weighting is sub-additive: six tiny median chunks together "weigh"
+    // as much as a small real block while covering ~3% of the average zone's
+    // AREA. Weight-only runt detection kept exactly these (field bug follow-up,
+    // same Beverly Hills / West Adams search) — the area check must catch them.
+    const big = SQW(0, 1);
+    const slivers = [0, 1, 2, 3, 4, 5].map(i => SQW(1 + i * 0.005, 0.005));
+    const blocks = [big, ...slivers];
+    const adj = [
+      { a: 0, b: 1, hard: true }, // big | first sliver: the carriageway
+      ...[1, 2, 3, 4, 5].map(i => ({ a: i, b: i + 1, hard: false })),
+    ];
+    const zones = mergeBlocksToZones(blocks, adj, 2);
+    expect(zones).toHaveLength(1);
+    const total = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(turf.area(zones[0]) / total).toBeCloseTo(1, 3);
+  });
+
+  it('folds a graph-isolated runt into its geometric neighbor when adjacency missed the touch', () => {
+    // sharedAdjacency's lineOverlap tolerance can miss a real touch on thin
+    // diagonal slivers, leaving a runt zone no graph absorption can reach
+    // (the last surviving 0.0156 km² sliver in the Beverly Hills field bug).
+    // The final geometric sweep must fold it into the zone it touches.
+    const blocks = [SQW(0, 1), SQW(1, 0.01)];
+    const zones = mergeBlocksToZones(blocks, [], 2); // adjacency empty: graph-isolated
+    expect(zones).toHaveLength(1);
+    const total = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(turf.area(zones[0]) / total).toBeCloseTo(1, 3);
+  });
+
+  it('keeps a non-runt hard-boxed compartment as its own zone', () => {
+    // two normal-sized blocks separated by a hard road: neither is a runt,
+    // so the hard road stays absolute and we get 2 zones even asking for 1.
+    const blocks = [SQW(0, 1), SQW(1, 1)];
+    const adj = [{ a: 0, b: 1, hard: true }];
+    expect(mergeBlocksToZones(blocks, adj, 1)).toHaveLength(2);
   });
 });

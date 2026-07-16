@@ -230,10 +230,18 @@ export function buildBlocks(boundary, hardLines, softLines, { maxBlockAreaM2 = M
 // soft-adjacent neighbor, even if that lands under the requested count.
 export const BLOCK_EFFORT_EXPONENT = 0.5;
 const RUNT_FRACTION = 0.25;
+// Effort weight is sqrt-sub-additive, so a cluster of tiny median chunks can
+// "weigh" like a real block while covering a few percent of an average zone's
+// area — weight-only runt detection kept exactly those (Beverly Hills / West
+// Adams field bug). A region under this fraction of the average region AREA is
+// a runt regardless of weight. Kept well below the ~10x area spread blended
+// effort allows, so legitimately small dense-urban zones are never absorbed.
+const RUNT_AREA_FRACTION = 0.1;
 
 export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
   if (!blocks.length) return [];
-  const weights = blocks.map(b => Math.pow(turf.area(b), BLOCK_EFFORT_EXPONENT));
+  const areasM2 = blocks.map(b => turf.area(b));
+  const weights = areasM2.map(a => Math.pow(a, BLOCK_EFFORT_EXPONENT));
   const neighbors = blocks.map(() => []);
   for (const e of adjacency) {
     if (e.hard) continue;
@@ -253,7 +261,7 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
     // weight target by one block and starve the last zone
     const maxBlocks = unassigned - (zonesRemaining - 1);
     const seed = assigned.indexOf(false);
-    const region = { blocks: [seed], weight: weights[seed] };
+    const region = { blocks: [seed], weight: weights[seed], areaM2: areasM2[seed] };
     assigned[seed] = true;
     const queue = [seed];
     while (region.weight < target && region.blocks.length < maxBlocks && queue.length) {
@@ -263,6 +271,7 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
         assigned[nb] = true;
         region.blocks.push(nb);
         region.weight += weights[nb];
+        region.areaM2 += areasM2[nb];
         queue.push(nb);
       }
     }
@@ -272,31 +281,41 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
   }
 
   // Runt absorption. Threshold is fixed from the initial average so the loop
-  // terminates and results don't depend on absorption order.
+  // terminates and results don't depend on absorption order. Soft neighbors are
+  // preferred; a runt with NO live soft neighbor may absorb across a hard edge
+  // as a last resort — dual-carriageway medians and hard-road corner cutoffs
+  // polygonize into slivers walled by hard edges on every side (Beverly Hills /
+  // West Adams field bug: 25 requested → 38 built, 16 of them median confetti),
+  // and those are artifacts, not searchable territory. Non-runt zones still
+  // never cross a hard road.
   const regionOf = new Array(blocks.length);
   regions.forEach((r, ri) => r.blocks.forEach(b => { regionOf[b] = ri; }));
-  const softEdges = adjacency.filter(e => !e.hard);
   const runtThreshold = (regions.reduce((s, r) => s + r.weight, 0) / regions.length) * RUNT_FRACTION;
+  const areaThreshold = (regions.reduce((s, r) => s + r.areaM2, 0) / regions.length) * RUNT_AREA_FRACTION;
   let changed = true;
   while (changed) {
     changed = false;
     for (let ri = 0; ri < regions.length; ri++) {
       const r = regions[ri];
-      if (r.dead || r.weight >= runtThreshold) continue;
-      let bestIdx = -1;
-      for (const e of softEdges) {
+      if (r.dead || (r.weight >= runtThreshold && r.areaM2 >= areaThreshold)) continue;
+      let bestSoft = -1, bestHard = -1;
+      for (const e of adjacency) {
         const ra = regionOf[e.a], rb = regionOf[e.b];
         if (ra === rb) continue;
         const other = ra === ri ? rb : rb === ri ? ra : -1;
-        if (other !== -1 && !regions[other].dead
-            && (bestIdx === -1 || regions[other].weight < regions[bestIdx].weight)) {
-          bestIdx = other;
+        if (other === -1 || regions[other].dead) continue;
+        if (e.hard) {
+          if (bestHard === -1 || regions[other].weight < regions[bestHard].weight) bestHard = other;
+        } else if (bestSoft === -1 || regions[other].weight < regions[bestSoft].weight) {
+          bestSoft = other;
         }
       }
+      const bestIdx = bestSoft !== -1 ? bestSoft : bestHard;
       if (bestIdx !== -1) {
         const host = regions[bestIdx];
         host.blocks.push(...r.blocks);
         host.weight += r.weight;
+        host.areaM2 += r.areaM2;
         r.blocks.forEach(b => { regionOf[b] = bestIdx; });
         r.dead = true;
         r.blocks = [];
@@ -305,9 +324,46 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
     }
   }
 
-  return regions
+  let polys = regions
     .filter(r => !r.dead)
     .map(r => r.blocks.slice(1).reduce((poly, i) => turf.union(poly, blocks[i]), blocks[r.blocks[0]]));
+
+  // sharedAdjacency's lineOverlap tolerance can miss a real touch on thin
+  // diagonal slivers, leaving a graph-isolated runt that no absorption pass
+  // above could reach. Final geometric sweep: fold any still-tiny zone into
+  // the zone it shares the most border with (nearest centroid as fallback).
+  // Each fold removes one zone, so this terminates.
+  while (polys.length > 1) {
+    const idx = polys.findIndex(p => turf.area(p) < areaThreshold);
+    if (idx === -1) break;
+    const tiny = polys[idx];
+    const rest = polys.filter((_, i) => i !== idx);
+    let best = -1, bestLen = -1;
+    for (let i = 0; i < rest.length; i++) {
+      let touches = false;
+      try { touches = turf.booleanIntersects(tiny, rest[i]); } catch {}
+      if (!touches) continue;
+      let len = 0;
+      try {
+        const ov = turf.lineOverlap(turf.polygonToLine(tiny), turf.polygonToLine(rest[i]), { tolerance: 0.01 });
+        len = ov.features.reduce((s, f) => s + turf.length(f, { units: 'kilometers' }), 0);
+      } catch {}
+      if (len > bestLen) { bestLen = len; best = i; }
+    }
+    if (best === -1) {
+      const c = turf.centroid(tiny);
+      let bestD = Infinity;
+      for (let i = 0; i < rest.length; i++) {
+        let d = Infinity;
+        try { d = turf.distance(c, turf.centroid(rest[i]), { units: 'kilometers' }); } catch {}
+        if (d < bestD) { bestD = d; best = i; }
+      }
+    }
+    if (best === -1) break;
+    try { rest[best] = turf.union(rest[best], tiny); } catch { break; }
+    polys = rest;
+  }
+  return polys;
 }
 
 export function generateZones(boundary, zoneCount, hardLines, softLines) {
