@@ -258,6 +258,24 @@ describe('fetchStreets (cache-first)', () => {
     expect(overpassCalls.length).toBeGreaterThan(0);
   });
 
+  it('returns full-detail allStreetLines even when the detail filter is coarse', async () => {
+    // Zone EFFORT is measured by real street length (walked/driven meters),
+    // which needs every street class even when polygonize only uses majors —
+    // the cache has full detail either way. Waterways are not streets.
+    global.fetch = vi.fn(url => {
+      if (String(url).startsWith(STREET_TILE_BASE)) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ elements: [
+          ...cachedElements,
+          { type: 'way', id: 9, tags: { waterway: 'river' }, geometry: [{ lat: 34.001, lon: -118.298 }, { lat: 34.002, lon: -118.299 }] },
+        ] }) });
+      }
+      throw new Error('unexpected');
+    });
+    const { softLines, allStreetLines } = await fetchStreets(boundary, { detail: 'city' });
+    expect(softLines).toHaveLength(0);        // residential filtered from zoning lines
+    expect(allStreetLines).toHaveLength(2);   // primary + residential, no waterway
+  });
+
   it('applies the detail filter to cached full-detail data', async () => {
     global.fetch = vi.fn(url => {
       if (String(url).startsWith(STREET_TILE_BASE)) {

@@ -33,9 +33,10 @@ export function allocateZoneCounts(total, weights) {
   return alloc;
 }
 
-// Zone numbers should read like a page — north rows first, west→east within a
-// row — so zone 47 sits next to zone 46 on the map instead of build-order
-// lottery numbers. Centroids are banded into ~sqrt(n) latitude rows.
+// Zone numbers snake across the map — north row west→east, next row east→west
+// — so consecutive numbers stay physically adjacent even across row breaks
+// (straight page order teleported the sequence to the far west at every new
+// row; field feedback 2026-07-15). Centroids are banded into ~sqrt(n) rows.
 export function orderZonesForNumbering(polys) {
   if (polys.length <= 1) return [...polys];
   const withC = polys.map(p => {
@@ -48,7 +49,11 @@ export function orderZonesForNumbering(polys) {
   const rowH = (maxLat - minLat) / rows || 1;
   const band = lat => Math.min(rows - 1, Math.floor((maxLat - lat) / rowH));
   return withC
-    .sort((a, b) => band(a.lat) - band(b.lat) || a.lon - b.lon)
+    .sort((a, b) => {
+      const ba = band(a.lat), bb = band(b.lat);
+      if (ba !== bb) return ba - bb;
+      return ba % 2 === 0 ? a.lon - b.lon : b.lon - a.lon;
+    })
     .map(c => c.p);
 }
 
@@ -244,7 +249,16 @@ function dissolveSlivers(faces) {
   return blocks.filter(b => meanWidthM(b) >= MIN_BLOCK_MEAN_WIDTH_M);
 }
 
-export function buildBlocks(boundary, hardLines, softLines, { maxBlockAreaM2 = MAX_PLAUSIBLE_BLOCK_AREA_M2 } = {}) {
+// Refine any block whose street effort alone exceeds this multiple of the
+// per-zone effort share — it would force an unsplittable oversized zone.
+const REFINE_EFFORT_FACTOR = 1;
+
+export function buildBlocks(boundary, hardLines, softLines, {
+  maxBlockAreaM2 = MAX_PLAUSIBLE_BLOCK_AREA_M2,
+  refineStreets = null,
+  targetZoneCount = 0,
+  skipAdjacency = false,
+} = {}) {
   const { edges, bbox } = buildEdgeSet(boundary, hardLines, softLines);
   const paddedBoundary = turf.bboxPolygon(bbox);
   const rawFaces = turf.polygonize(turf.featureCollection(edges));
@@ -266,13 +280,36 @@ export function buildBlocks(boundary, hardLines, softLines, { maxBlockAreaM2 = M
     // clipping rejects legitimate blocks (found while validating this code)
     .filter(f => f && turf.area(f) > 1 && turf.area(f) < maxBlockAreaM2);
 
-  const blocks = dissolveSlivers(faces);
+  let blocks = dissolveSlivers(faces);
+
+  // Local LOD refinement: at coarse detail one block between majors can hold a
+  // whole dense street grid — since zones are built from whole blocks, that
+  // block forces one giant zone over a visibly dense area (Beverly Hills field
+  // feedback: 153 street-km in a single block). Any block whose full-detail
+  // street effort exceeds a zone's share is re-polygonized with those streets,
+  // LOCALLY — sparse areas keep their coarse, fast blocks.
+  if (refineStreets?.length && targetZoneCount > 0 && blocks.length) {
+    const efforts = computeBlockEfforts(blocks, refineStreets);
+    const targetEffort = (efforts.reduce((s, e) => s + e, 0) / targetZoneCount) * REFINE_EFFORT_FACTOR;
+    const lineBboxes = refineStreets.map(l => turf.bbox(l));
+    blocks = blocks.flatMap((b, i) => {
+      if (efforts[i] <= targetEffort) return [b];
+      const bb = turf.bbox(b);
+      const local = refineStreets.filter((l, li) => bboxesTouch(lineBboxes[li], bb));
+      try {
+        const sub = buildBlocks(b, [], local, { maxBlockAreaM2, skipAdjacency: true });
+        return sub.blocks.length ? sub.blocks : [b];
+      } catch { return [b]; }
+    });
+  }
 
   const adjacency = [];
-  for (let i = 0; i < blocks.length; i++) {
-    for (let j = i + 1; j < blocks.length; j++) {
-      const adj = sharedAdjacency(blocks[i], blocks[j], hardLines);
-      if (adj) adjacency.push({ a: i, b: j, hard: adj.hard });
+  if (!skipAdjacency) {
+    for (let i = 0; i < blocks.length; i++) {
+      for (let j = i + 1; j < blocks.length; j++) {
+        const adj = sharedAdjacency(blocks[i], blocks[j], hardLines);
+        if (adj) adjacency.push({ a: i, b: j, hard: adj.hard });
+      }
     }
   }
   return { blocks, adjacency };
@@ -301,6 +338,41 @@ export function buildBlocks(boundary, hardLines, softLines, { maxBlockAreaM2 = M
 // soft-adjacent neighbor, even if that lands under the requested count.
 export const BLOCK_EFFORT_EXPONENT = 0.5;
 const RUNT_FRACTION = 0.25;
+
+// Street length IS search effort: a searcher walks/drives streets, so meters
+// of street inside a block is the honest workload measure. sqrt(area) was only
+// a proxy for it — fine at full detail (small blocks ≈ dense streets) but
+// wrong at city LOD, where block size reflects major-road spacing: one mega
+// block over the dense Beverly Hills grid "weighed" less than the same area
+// cut fine, producing huge zones over visibly dense areas (field feedback
+// 2026-07-15). Open ground still takes effort to sweep — each m² counts as
+// this many street-equivalent meters (LA residential runs ~0.015-0.02 m/m²,
+// so open ground ≈ a quarter of residential effort). Tunable.
+export const OPEN_GROUND_M_PER_M2 = 0.005;
+
+// Effort per block = full-detail street meters inside it (each segment counted
+// by its midpoint) + the open-ground allowance for the block's area.
+export function computeBlockEfforts(blocks, streetLines) {
+  const bboxes = blocks.map(b => turf.bbox(b));
+  const efforts = blocks.map(b => turf.area(b) * OPEN_GROUND_M_PER_M2);
+  for (const line of streetLines ?? []) {
+    const coords = line.geometry.coordinates;
+    for (let s = 0; s + 1 < coords.length; s++) {
+      const [x1, y1] = coords[s], [x2, y2] = coords[s + 1];
+      const mid = [(x1 + x2) / 2, (y1 + y2) / 2];
+      for (let i = 0; i < blocks.length; i++) {
+        const bb = bboxes[i];
+        if (mid[0] < bb[0] || mid[0] > bb[2] || mid[1] < bb[1] || mid[1] > bb[3]) continue;
+        let inside = false;
+        try { inside = turf.booleanPointInPolygon(mid, blocks[i]); } catch {}
+        if (!inside) continue;
+        efforts[i] += turf.distance([x1, y1], [x2, y2], { units: 'kilometers' }) * 1000;
+        break;
+      }
+    }
+  }
+  return efforts;
+}
 // Effort weight is sqrt-sub-additive, so a cluster of tiny median chunks can
 // "weigh" like a real block while covering a few percent of an average zone's
 // area — weight-only runt detection kept exactly those (Beverly Hills / West
@@ -309,10 +381,13 @@ const RUNT_FRACTION = 0.25;
 // effort allows, so legitimately small dense-urban zones are never absorbed.
 const RUNT_AREA_FRACTION = 0.1;
 
-export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
+export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {}) {
   if (!blocks.length) return [];
   const areasM2 = blocks.map(b => turf.area(b));
-  const weights = areasM2.map(a => Math.pow(a, BLOCK_EFFORT_EXPONENT));
+  // efforts (street meters per block, from computeBlockEfforts) is the real
+  // workload measure; sqrt(area) remains the fallback for callers without
+  // street data (grid fallback, older tests).
+  const weights = efforts ?? areasM2.map(a => Math.pow(a, BLOCK_EFFORT_EXPONENT));
   const neighbors = blocks.map(() => []);
   for (const e of adjacency) {
     if (e.hard) continue;
@@ -320,36 +395,80 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
     neighbors[e.b].push(e.a);
   }
 
+  // Soft-connected compartments get their zone counts allocated UP FRONT by
+  // effort share (largest remainder, min 1 — allocateZoneCounts), then regions
+  // grow inside each compartment toward its own target. The old global grower
+  // seeded compartments in block order: whichever dense compartment happened
+  // to come after the requested count was spent swallowed all its effort as
+  // ONE giant zone (76 street-km zones over dense grids, field 2026-07-15).
+  const parent = blocks.map((_, i) => i);
+  const findRoot = i => (parent[i] === i ? i : (parent[i] = findRoot(parent[i])));
+  for (const e of adjacency) { if (!e.hard) parent[findRoot(e.a)] = findRoot(e.b); }
+  const compByRoot = new Map();
+  blocks.forEach((_, i) => {
+    const r = findRoot(i);
+    if (!compByRoot.has(r)) compByRoot.set(r, []);
+    compByRoot.get(r).push(i);
+  });
+  const comps = [...compByRoot.values()];
+  const compWeights = comps.map(c => c.reduce((s, i) => s + weights[i], 0));
+  // Proportional share, min 1 — deliberately NOT forced to sum to zoneCount.
+  // With more compartments than requested zones, an exact-sum allocation
+  // starves the dense compartments to feed every sliver compartment's min-1
+  // floor (field: a 76 street-km compartment got ONE zone while 30 slivers
+  // each got one too). Extra sliver regions are runts the absorption pass
+  // folds; "more zones than requested rather than crossing a hard road"
+  // remains the standing tradeoff.
+  const totalCompWeight = compWeights.reduce((s, w) => s + w, 0) || 1;
+  const compAlloc = compWeights.map(w => Math.max(1, Math.round(zoneCount * w / totalCompWeight)));
+
   const assigned = new Array(blocks.length).fill(false);
   const regions = [];
-  let remainingWeight = weights.reduce((s, w) => s + w, 0);
-  let unassigned = blocks.length;
-  while (unassigned > 0) {
-    const zonesRemaining = Math.max(1, zoneCount - regions.length);
-    const target = remainingWeight / zonesRemaining;
-    // never grow so far that the remaining zones can't get a block each —
-    // float noise in geodesic areas otherwise lets a region overshoot its
-    // weight target by one block and starve the last zone
-    const maxBlocks = unassigned - (zonesRemaining - 1);
-    const seed = assigned.indexOf(false);
-    const region = { blocks: [seed], weight: weights[seed], areaM2: areasM2[seed] };
-    assigned[seed] = true;
-    const queue = [seed];
-    while (region.weight < target && region.blocks.length < maxBlocks && queue.length) {
-      const cur = queue.shift();
-      for (const nb of neighbors[cur]) {
-        if (assigned[nb] || region.weight >= target || region.blocks.length >= maxBlocks) continue;
-        assigned[nb] = true;
-        region.blocks.push(nb);
-        region.weight += weights[nb];
-        region.areaM2 += areasM2[nb];
-        queue.push(nb);
+  comps.forEach((comp, ci) => {
+    const compCount = Math.min(compAlloc[ci], comp.length);
+    const baseTarget = compWeights[ci] / compCount;
+    let remainingWeight = compWeights[ci];
+    let unassigned = comp.length;
+    let made = 0;
+    while (unassigned > 0) {
+      const zonesRemaining = Math.max(1, compCount - made);
+      // adaptive target absorbs float noise, but once the planned count is
+      // spent it degenerates to "all remaining weight" and the LAST region
+      // eats the compartment's leftovers as one giant zone (88 street-km
+      // zones, field 2026-07-15). Cap at 1.5x the fair share — leftovers
+      // form extra regions that runt absorption folds or that stand as
+      // legitimate extra zones.
+      const target = Math.min(remainingWeight / zonesRemaining, baseTarget * 1.5);
+      // never grow so far that the remaining zones can't get a block each —
+      // float noise in geodesic areas otherwise lets a region overshoot its
+      // weight target by one block and starve the last zone
+      const maxBlocks = unassigned - (zonesRemaining - 1);
+      const seed = comp.find(i => !assigned[i]);
+      const region = { blocks: [seed], weight: weights[seed], areaM2: areasM2[seed] };
+      assigned[seed] = true;
+      const queue = [seed];
+      while (region.weight < target && region.blocks.length < maxBlocks && queue.length) {
+        const cur = queue.shift();
+        for (const nb of neighbors[cur]) {
+          if (assigned[nb] || region.weight >= target || region.blocks.length >= maxBlocks) continue;
+          // a BIG block grabbed at the last moment used to double a zone's
+          // workload (25 km target, 51+ km zones in the field) — let it seed
+          // its own zone instead. Small blocks may still overshoot slightly;
+          // overshoot is bounded by the block's own size (bin-packing rule).
+          if (weights[nb] > target * 0.5 && region.weight + weights[nb] > target * 1.2) continue;
+          assigned[nb] = true;
+          region.blocks.push(nb);
+          region.weight += weights[nb];
+          region.areaM2 += areasM2[nb];
+          queue.push(nb);
+        }
       }
+      remainingWeight -= region.weight;
+      unassigned -= region.blocks.length;
+      made += 1;
+      regions.push(region);
     }
-    remainingWeight -= region.weight;
-    unassigned -= region.blocks.length;
-    regions.push(region);
-  }
+  });
 
   // Runt absorption. Threshold is fixed from the initial average so the loop
   // terminates and results don't depend on absorption order. Soft neighbors are

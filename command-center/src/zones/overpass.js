@@ -150,7 +150,15 @@ export async function fetchStreets(boundary, { detail = 'full', onProgress } = {
     }
   }
   onProgress?.(tiles.length, tiles.length);
-  return classifyWays(filterByDetail([...wayById.values()], detail));
+  const all = [...wayById.values()];
+  // Zone EFFORT is measured in street meters at FULL detail (the cache stores
+  // full detail regardless of the zoning LOD) — every street class counts as
+  // search workload even when polygonize only sees majors. Waterways aren't
+  // streets and are excluded.
+  const allStreetLines = all
+    .filter(el => el.tags?.highway)
+    .map(el => turf.lineString(el.geometry.map(pt => [pt.lon, pt.lat])));
+  return { ...classifyWays(filterByDetail(all, detail)), allStreetLines };
 }
 
 export async function fetchStreetGraph(boundary, { detail = 'full', onProgress } = {}) {

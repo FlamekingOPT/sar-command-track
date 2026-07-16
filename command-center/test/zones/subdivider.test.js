@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { computeZoneCount, allocateZoneCounts, orderZonesForNumbering, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones } from '../../src/zones/subdivider.js';
+import { computeZoneCount, allocateZoneCounts, orderZonesForNumbering, WALKED_RATE_M2_PER_MIN, DRIVEN_RATE_M2_PER_MIN, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2 } from '../../src/zones/subdivider.js';
 
 describe('computeZoneCount', () => {
   it('exposes the validated per-minute coverage rates', () => {
@@ -130,6 +130,27 @@ describe('buildBlocks', () => {
 
   it('HARD_HIGHWAYS covers motorway/trunk/primary only', () => {
     expect(HARD_HIGHWAYS).toEqual(['motorway', 'trunk', 'primary']);
+  });
+
+  it('refines a block whose street effort alone exceeds one zone share', () => {
+    // At city LOD a single block between majors can hold a whole dense grid
+    // (153 street-km in one Beverly Hills block, field feedback 2026-07-15) —
+    // zones are whole blocks, so no balancing can split it. Blocks whose
+    // effort exceeds the per-zone share must be re-polygonized with the
+    // full-detail streets, locally, leaving sparse blocks coarse.
+    const denseStreets = [
+      turf.lineString([[0.0005, -0.01], [0.0005, 0.013]]),
+      turf.lineString([[0.0010, -0.01], [0.0010, 0.013]]),
+    ]; // both inside the LEFT half only
+    const coarse = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, []);
+    expect(coarse.blocks).toHaveLength(2); // baseline: left | right of the hard road
+    const { blocks } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, [], {
+      refineStreets: denseStreets,
+      targetZoneCount: 3,
+    });
+    expect(blocks.length).toBe(4); // left split into 3 columns, right untouched
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(GRID_BOUNDARY)).toBeGreaterThan(0.999);
   });
 
   it('dissolves a dual-carriageway median sliver into a neighbor block', () => {
@@ -295,6 +316,91 @@ describe('generateZones', () => {
 });
 
 
+describe('computeBlockEfforts', () => {
+  const SQ1 = turf.polygon([[[0, 0], [0.003, 0], [0.003, 0.003], [0, 0.003], [0, 0]]]);   // ~330m square
+  const SQ2 = turf.polygon([[[0.003, 0], [0.006, 0], [0.006, 0.003], [0.003, 0.003], [0.003, 0]]]);
+
+  it('weights blocks by the street length inside them', () => {
+    // 3 street segments inside block 1, none in block 2
+    const streets = [
+      turf.lineString([[0.0005, 0.0008], [0.0025, 0.0008]]),
+      turf.lineString([[0.0005, 0.0015], [0.0025, 0.0015]]),
+      turf.lineString([[0.0005, 0.0022], [0.0025, 0.0022]]),
+    ];
+    const [e1, e2] = computeBlockEfforts([SQ1, SQ2], streets);
+    expect(e1).toBeGreaterThan(e2 * 2);
+  });
+
+  it('gives a street-less block an open-ground floor proportional to its area', () => {
+    const [e1, e2] = computeBlockEfforts([SQ1, SQ2], []);
+    expect(e2).toBeCloseTo(turf.area(SQ2) * OPEN_GROUND_M_PER_M2, 5);
+    expect(e2).toBeGreaterThan(0);
+    expect(e1 / e2).toBeCloseTo(turf.area(SQ1) / turf.area(SQ2), 3);
+  });
+
+  it('assigns a street crossing both blocks to each by the segment midpoints', () => {
+    const crossing = [turf.lineString([[0.0005, 0.0015], [0.0025, 0.0015], [0.0035, 0.0015], [0.0055, 0.0015]])];
+    const [e1, e2] = computeBlockEfforts([SQ1, SQ2], crossing);
+    const floor1 = turf.area(SQ1) * OPEN_GROUND_M_PER_M2;
+    const floor2 = turf.area(SQ2) * OPEN_GROUND_M_PER_M2;
+    expect(e1).toBeGreaterThan(floor1); // got its segments
+    expect(e2).toBeGreaterThan(floor2);
+  });
+});
+
+describe('mergeBlocksToZones with explicit efforts (street-length balancing)', () => {
+  const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
+
+  it('balances zones by provided efforts, not by area', () => {
+    // 4 EQUAL-AREA blocks in a soft chain; block 0 holds 3x the street length
+    // of the rest combined (dense grid vs open hillside). Field bug: at city
+    // LOD, sqrt(block area) said big-blocks-are-cheap, producing huge zones
+    // over visibly dense areas. With street-length efforts, the dense block
+    // stands alone and the three sparse ones form the other zone.
+    const blocks = [SQX(0), SQX(1), SQX(2), SQX(3)];
+    const adj = [0, 1, 2].map(i => ({ a: i, b: i + 1, hard: false }));
+    const zones = mergeBlocksToZones(blocks, adj, 2, { efforts: [30_000, 3_000, 3_000, 3_000] });
+    expect(zones).toHaveLength(2);
+    const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
+    expect(widths[0]).toBeCloseTo(1, 5);
+    expect(widths[1]).toBeCloseTo(3, 5);
+  });
+});
+
+describe('mergeBlocksToZones — per-compartment zone allocation', () => {
+  const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
+
+  it('does not grow a region far past its effort target when a huge block is adjacent', () => {
+    // A near-target-weight neighbor added at the last moment used to double a
+    // zone's workload (25 km target, 51+ km zones in the field). The grower
+    // must skip a block that would blow the target by >20% — that block seeds
+    // its own zone instead.
+    const blocks = [SQX(0), SQX(1), SQX(2), SQX(3)];
+    const adj = [0, 1, 2].map(i => ({ a: i, b: i + 1, hard: false }));
+    // total 80, 2 zones, target 40: greedy would take 10+10+35=55 (1.4x)
+    const zones = mergeBlocksToZones(blocks, adj, 2, { efforts: [10, 10, 35, 25] });
+    expect(zones).toHaveLength(2);
+    const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
+    expect(widths[0]).toBeCloseTo(2, 5); // [10,10] zone
+    expect(widths[1]).toBeCloseTo(2, 5); // [35,25] zone
+  });
+
+  it('gives a dense hard-boxed compartment its effort share of zones, regardless of seed order', () => {
+    // Three isolated single-block compartments come FIRST in block order, then
+    // a dense 6-block chain holding 75% of the effort. The old global grower
+    // spent the requested count on the early compartments and dumped the whole
+    // dense chain into ONE zone (76 street-km zones, field feedback
+    // 2026-07-15). Per-compartment allocation must split the chain instead.
+    const blocks = [SQX(0), SQX(2), SQX(4), SQX(10), SQX(11), SQX(12), SQX(13), SQX(14), SQX(15)];
+    const adj = [3, 4, 5, 6, 7].map(i => ({ a: i, b: i + 1, hard: false }));
+    const efforts = [20, 20, 20, 30, 30, 30, 30, 30, 30];
+    const zones = mergeBlocksToZones(blocks, adj, 4, { efforts });
+    const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
+    // dense chain must be split — no zone may span the whole 6-block chain
+    expect(widths[widths.length - 1]).toBeLessThanOrEqual(3.01);
+  });
+});
+
 describe('orderZonesForNumbering', () => {
   // 3x3 grid of unit squares, fed in shuffled order. Reading order = north row
   // first, west→east within a row: centroids (lat 2.5, lon 0.5/1.5/2.5), then
@@ -302,7 +408,11 @@ describe('orderZonesForNumbering', () => {
   const cell = (x, y) => turf.polygon([[[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]]]);
   const shuffled = [cell(1, 1), cell(2, 2), cell(0, 0), cell(2, 0), cell(0, 2), cell(1, 0), cell(2, 1), cell(0, 1), cell(1, 2)];
 
-  it('orders zones like reading a page: north rows first, west to east', () => {
+  it('orders zones in a serpentine: north row west→east, next row east→west, …', () => {
+    // Straight page order teleports the number sequence across the whole map
+    // at every row break (…3 ends far east, 4 restarts far west). Serpentine
+    // keeps consecutive numbers physically adjacent — command can point at
+    // zone 7 and know 6 and 8 are next door (field feedback 2026-07-15).
     const ordered = orderZonesForNumbering(shuffled);
     const key = p => {
       const [lon, lat] = turf.centroid(p).geometry.coordinates;
@@ -310,7 +420,7 @@ describe('orderZonesForNumbering', () => {
     };
     expect(ordered.map(key)).toEqual([
       '0,2', '1,2', '2,2',
-      '0,1', '1,1', '2,1',
+      '2,1', '1,1', '0,1',
       '0,0', '1,0', '2,0',
     ]);
   });

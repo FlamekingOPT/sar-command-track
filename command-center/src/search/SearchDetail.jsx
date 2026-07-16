@@ -3,7 +3,7 @@ import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
 import { fetchStreets, selectDetail } from '../zones/overpass';
-import { computeZoneCount, allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering } from '../zones/subdivider';
+import { computeZoneCount, allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering, computeBlockEfforts } from '../zones/subdivider';
 import { gridZones } from '../zones/grid';
 import { createZones, updateZoneStatus, watchZones, deleteZonesForBoundary } from '../firebase/zones';
 import { updateSearchBoundaries, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
@@ -148,7 +148,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         const label = targets.length > 1 ? ` (boundary ${i + 1} of ${targets.length})` : '';
         try {
           setGeneratingStatus(`Fetching map data…${label}`);
-          const { hardLines, softLines } = await fetchStreets(t.feature, {
+          const { hardLines, softLines, allStreetLines } = await fetchStreets(t.feature, {
             detail: selectDetail(areaM2, estAlloc),
             onProgress: (done, total) => {
               if (total > 1) setGeneratingStatus(`Fetching map data…${label} tile ${Math.min(done + 1, total)}/${total}`);
@@ -160,8 +160,17 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           // 4× the expected zone area keeps every legitimate block while still
           // dropping polygonize leaks.
           const maxBlockAreaM2 = Math.max(200_000, (areaM2 / estAlloc) * 4);
-          const { blocks, adjacency } = buildBlocks(t.feature, hardLines, softLines, { maxBlockAreaM2 });
-          built.push({ ...t, blocks, adjacency });
+          const { blocks, adjacency } = buildBlocks(t.feature, hardLines, softLines, {
+            maxBlockAreaM2,
+            // blocks holding more than one zone's share of streets get locally
+            // re-polygonized at full detail so dense areas can split
+            refineStreets: allStreetLines,
+            targetZoneCount: estAlloc,
+          });
+          // real workload per block: full-detail street meters (+ open-ground
+          // allowance) — zones balance search effort, not a block-size proxy
+          const efforts = computeBlockEfforts(blocks, allStreetLines);
+          built.push({ ...t, blocks, adjacency, efforts });
         } catch (err) {
           // Street data unavailable (no cache tile, live Overpass down) —
           // degrade to grid zones so generation NEVER produces nothing.
@@ -175,12 +184,17 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       const all = []; // { poly, boundaryId } across every target boundary
       const gridCount = gridded.reduce((s, g) => s + g.polys.length, 0);
       if (built.length) {
-        const alloc = allocateZoneCounts(Math.max(1, remaining - gridCount), built.map(b => Math.max(1, b.blocks.length)));
+        // split the total by each boundary's total EFFORT (street meters), so a
+        // dense boundary gets proportionally more zones than an open one
+        const alloc = allocateZoneCounts(
+          Math.max(1, remaining - gridCount),
+          built.map(b => Math.max(1, b.efforts.reduce((s, e) => s + e, 0))),
+        );
         const noStreets = [];
         built.forEach((b, i) => {
           // clamp: a zone is never smaller than one block (spec §1)
           const clamped = Math.min(alloc[i], Math.max(1, b.blocks.length));
-          const polys = b.blocks.length ? mergeBlocksToZones(b.blocks, b.adjacency, clamped) : [b.feature];
+          const polys = b.blocks.length ? mergeBlocksToZones(b.blocks, b.adjacency, clamped, { efforts: b.efforts }) : [b.feature];
           if (!b.blocks.length) noStreets.push(b.id);
           for (const p of polys) all.push({ poly: p, boundaryId: b.id });
         });
