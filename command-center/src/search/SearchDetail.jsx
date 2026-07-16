@@ -3,7 +3,7 @@ import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
 import { fetchStreets, selectDetail } from '../zones/overpass';
-import { computeZoneCount, allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering, computeBlockEfforts } from '../zones/subdivider';
+import { allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering, computeBlockEfforts } from '../zones/subdivider';
 import { gridZones } from '../zones/grid';
 import { createZones, updateZoneStatus, watchZones, deleteZonesForBoundary } from '../firebase/zones';
 import { updateSearchBoundaries, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
@@ -16,11 +16,8 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [searchStatus, setSearchStatus] = useState('setup');
   const [drawMode, setDrawMode] = useState('idle');
   const [boundaries, setBoundaries] = useState([]);
-  const [zoneCount, setZoneCount] = useState(1);
-  const [countTouched, setCountTouched] = useState(false);
+  const [zoneCount, setZoneCount] = useState(25);
   const [generateNotice, setGenerateNotice] = useState('');
-  const [searchMinutes, setSearchMinutes] = useState(30);
-  const [searchMode, setSearchMode] = useState('walked');
   const [generatingZones, setGeneratingZones] = useState(false);
   const [generatingStatus, setGeneratingStatus] = useState('');
   const [generateError, setGenerateError] = useState('');
@@ -60,23 +57,6 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   // so a missing boundaryId is attributed there. Keeps "does this boundary have
   // zones?" true for old searches.
   const zoneBelongsTo = (z, boundaryId) => (z.boundaryId ?? 'legacy-1') === boundaryId;
-
-  const totalAreaM2 = boundaries.reduce(
-    (s, b) => s + turf.area({ type: 'Feature', geometry: b.geometry, properties: {} }), 0);
-
-  // Time+mode is a SUGGESTER now (spec §1): changing it always refills the
-  // count field; adding/editing boundaries refills only until command has
-  // typed a count of their own.
-  useEffect(() => {
-    if (!countTouched && totalAreaM2 > 0) {
-      setZoneCount(computeZoneCount(totalAreaM2, searchMinutes, searchMode));
-    }
-  }, [totalAreaM2]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  function applySuggestedCount(minutes, mode) {
-    setCountTouched(false);
-    if (totalAreaM2 > 0) setZoneCount(computeZoneCount(totalAreaM2, minutes, mode));
-  }
 
   async function handleFeatureDrawn(feature) {
     if (readOnly) return;
@@ -280,28 +260,16 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           </button>
         )}
 
-        {/* Step 2: zone count (time+mode suggests, command decides) */}
+        {/* Step 2: zone count (command types the total; walked/driven suggester
+            removed 2026-07-16 — it proposed absurd counts like 1031) */}
         {searchStatus === 'setup' && boundaries.length > 0
           && boundaries.some(b => !zones.some(z => zoneBelongsTo(z, b.id))) && (
           <>
             <span style={{ fontSize: 13, opacity: 0.7 }}>Step 2: Zones</span>
             <input
               type="number" min={1} value={zoneCount}
-              onChange={e => { setCountTouched(true); setZoneCount(Math.max(1, Number(e.target.value))); }}
+              onChange={e => setZoneCount(Math.max(1, Number(e.target.value)))}
               style={{ width: 64, padding: '3px 6px', background: '#334155', border: 'none', color: '#f8fafc', borderRadius: 4 }} />
-            <span style={{ fontSize: 13, opacity: 0.7 }}>suggest by</span>
-            <input
-              type="number" min={5} max={240} value={searchMinutes}
-              onChange={e => { const v = Number(e.target.value); setSearchMinutes(v); applySuggestedCount(v, searchMode); }}
-              style={{ width: 52, padding: '3px 6px', background: '#334155', border: 'none', color: '#f8fafc', borderRadius: 4 }} />
-            <span style={{ fontSize: 13, opacity: 0.7 }}>min</span>
-            <select
-              value={searchMode}
-              onChange={e => { setSearchMode(e.target.value); applySuggestedCount(searchMinutes, e.target.value); }}
-              style={{ padding: '3px 6px', background: '#334155', border: 'none', color: '#f8fafc', borderRadius: 4 }}>
-              <option value="walked">Walked</option>
-              <option value="driven">Driven</option>
-            </select>
             <button
               onClick={handleGenerateZones}
               disabled={generatingZones}
