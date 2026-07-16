@@ -181,21 +181,92 @@ function sharedAdjacency(polyA, polyB, hardLines) {
 // detail once discarded every real block and kept only sliver-confetti
 // because this cap was hard-coded — callers using coarse detail must pass a
 // cap sized to their expected zone area.
+// A face's mean width: 2·area/perimeter (exact w for a long w×L strip). Road
+// medians and interchange gores run 10–25m; real searchable blocks are 40m+.
+const MIN_BLOCK_MEAN_WIDTH_M = 25;
+
+function meanWidthM(poly) {
+  try {
+    const perimM = turf.length(turf.polygonToLine(poly), { units: 'kilometers' }) * 1000;
+    return perimM > 0 ? (2 * turf.area(poly)) / perimM : 0;
+  } catch { return 0; }
+}
+
+function sharedBorderM(a, b) {
+  try {
+    const ov = turf.lineOverlap(turf.polygonToLine(a), turf.polygonToLine(b), { tolerance: 0.003 });
+    return ov.features.reduce((s, f) => s + turf.length(f, { units: 'kilometers' }), 0) * 1000;
+  } catch { return 0; }
+}
+
+function bboxesTouch(ba, bb) {
+  return ba[0] <= bb[2] && bb[0] <= ba[2] && ba[1] <= bb[3] && bb[1] <= ba[3];
+}
+
+// Dual carriageways polygonize the strip between their centerlines into a
+// sliver face no searcher can be assigned (Beverly Hills field bug: median
+// slivers surviving as zones, then getting relabeled onto distant hosts).
+// Dissolving them at the BLOCK level — into the neighbor sharing the longest
+// border, repeating so median chains fold outward — keeps graph connectivity
+// across soft dual carriageways, so zones can still merge over a divided
+// secondary road. Slivers that touch nothing are artifacts and are dropped.
+function dissolveSlivers(faces) {
+  const blocks = [...faces];
+  const bboxes = blocks.map(b => turf.bbox(b));
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < blocks.length; i++) {
+      if (meanWidthM(blocks[i]) >= MIN_BLOCK_MEAN_WIDTH_M) continue;
+      let best = -1, bestLen = 0, bestIsSliver = true;
+      for (let j = 0; j < blocks.length; j++) {
+        if (i === j || !bboxesTouch(bboxes[i], bboxes[j])) continue;
+        const len = sharedBorderM(blocks[i], blocks[j]);
+        if (!len) continue;
+        const jSliver = meanWidthM(blocks[j]) < MIN_BLOCK_MEAN_WIDTH_M;
+        // prefer any real block over a fellow sliver, then longest border
+        if (best === -1 || (bestIsSliver && !jSliver) || (bestIsSliver === jSliver && len > bestLen)) {
+          best = j; bestLen = len; bestIsSliver = jSliver;
+        }
+      }
+      if (best === -1) continue; // isolated sliver — dropped below
+      try {
+        const union = turf.union(blocks[best], blocks[i]);
+        blocks[best] = union;
+        bboxes[best] = turf.bbox(union);
+        blocks.splice(i, 1);
+        bboxes.splice(i, 1);
+        merged = true;
+        break;
+      } catch { /* keep both; the zone-level sweep still catches it */ }
+    }
+  }
+  return blocks.filter(b => meanWidthM(b) >= MIN_BLOCK_MEAN_WIDTH_M);
+}
+
 export function buildBlocks(boundary, hardLines, softLines, { maxBlockAreaM2 = MAX_PLAUSIBLE_BLOCK_AREA_M2 } = {}) {
   const { edges, bbox } = buildEdgeSet(boundary, hardLines, softLines);
   const paddedBoundary = turf.bboxPolygon(bbox);
   const rawFaces = turf.polygonize(turf.featureCollection(edges));
 
-  const blocks = rawFaces.features
+  const faces = rawFaces.features
     .filter(f => {
       try { return turf.booleanPointInPolygon(turf.centroid(f), paddedBoundary) && turf.area(f) > 0; }
       catch { return false; }
     })
     .map(f => { try { return turf.intersect(f, boundary); } catch { return null; } })
+    // a face crossing the boundary twice clips into a MultiPolygon — split it
+    // so each contiguous part is its own block with its own adjacency
+    .flatMap(f => {
+      if (!f) return [];
+      return f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates.map(c => turf.polygon(c)) : [f];
+    })
     // size cap applies AFTER clipping — a face's pre-clip (padded) area is
     // inflated by whatever pad it happens to include, so checking before
     // clipping rejects legitimate blocks (found while validating this code)
     .filter(f => f && turf.area(f) > 1 && turf.area(f) < maxBlockAreaM2);
+
+  const blocks = dissolveSlivers(faces);
 
   const adjacency = [];
   for (let i = 0; i < blocks.length; i++) {
@@ -328,6 +399,15 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
     .filter(r => !r.dead)
     .map(r => r.blocks.slice(1).reduce((poly, i) => turf.union(poly, blocks[i]), blocks[r.blocks[0]]));
 
+  // A zone must be ONE contiguous polygon — a multi-part zone renders its
+  // number on every detached part (duplicate "13"s field bug). Multi-parts
+  // sneak in two ways: turf.intersect clips a face crossing the boundary twice
+  // into a MultiPolygon block, and turf.union of point-touching pieces can
+  // return one. Split them; the sliver sweep below absorbs any tiny parts.
+  polys = polys.flatMap(p => p.geometry.type === 'MultiPolygon'
+    ? p.geometry.coordinates.map(c => turf.polygon(c))
+    : [p]);
+
   // sharedAdjacency's lineOverlap tolerance can miss a real touch on thin
   // diagonal slivers, leaving a graph-isolated runt that no absorption pass
   // above could reach. Final geometric sweep: fold any still-tiny zone into
@@ -351,15 +431,12 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount) {
       if (len > bestLen) { bestLen = len; best = i; }
     }
     if (best === -1) {
-      const c = turf.centroid(tiny);
-      let bestD = Infinity;
-      for (let i = 0; i < rest.length; i++) {
-        let d = Infinity;
-        try { d = turf.distance(c, turf.centroid(rest[i]), { units: 'kilometers' }); } catch {}
-        if (d < bestD) { bestD = d; best = i; }
-      }
+      // touches nothing — an artifact, not territory. Dropping beats merging
+      // into a distant host: a detached union renders as a multi-part zone
+      // whose number appears on every part (duplicate-label field bug).
+      polys = rest;
+      continue;
     }
-    if (best === -1) break;
     try { rest[best] = turf.union(rest[best], tiny); } catch { break; }
     polys = rest;
   }

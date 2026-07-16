@@ -131,6 +131,41 @@ describe('buildBlocks', () => {
   it('HARD_HIGHWAYS covers motorway/trunk/primary only', () => {
     expect(HARD_HIGHWAYS).toEqual(['motorway', 'trunk', 'primary']);
   });
+
+  it('dissolves a dual-carriageway median sliver into a neighbor block', () => {
+    // Two parallel hard lines ~22m apart — a divided road. The strip between
+    // the centerlines polygonizes into a face no searcher can be assigned
+    // (Beverly Hills field bug: median slivers becoming zones, then getting
+    // relabeled onto distant hosts). It must be folded into a real block, so
+    // only 2 blocks remain, still covering ~100% of the boundary.
+    const DUAL_HARD = [
+      turf.lineString([[0.0014, -0.01], [0.0014, 0.013]]),
+      turf.lineString([[0.0016, -0.01], [0.0016, 0.013]]),
+    ];
+    const { blocks, adjacency } = buildBlocks(GRID_BOUNDARY, DUAL_HARD, []);
+    expect(blocks).toHaveLength(2);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(GRID_BOUNDARY)).toBeGreaterThan(0.999);
+    // the two sides remain adjacent (across the carriageway) and hard
+    expect(adjacency).toHaveLength(1);
+    expect(adjacency[0].hard).toBe(true);
+  });
+
+  it('keeps graph connectivity across a SOFT dual carriageway after median dissolve', () => {
+    // Secondary roads at coarse LOD are soft but still often divided. Folding
+    // the median at the BLOCK level must leave the two sides soft-adjacent, so
+    // zones can still merge across the road.
+    const DUAL_SOFT = [
+      turf.lineString([[0.0014, -0.01], [0.0014, 0.013]]),
+      turf.lineString([[0.0016, -0.01], [0.0016, 0.013]]),
+    ];
+    const { blocks, adjacency } = buildBlocks(GRID_BOUNDARY, [], DUAL_SOFT);
+    expect(blocks).toHaveLength(2);
+    expect(adjacency).toHaveLength(1);
+    expect(adjacency[0].hard).toBe(false);
+    const zones = mergeBlocksToZones(blocks, adjacency, 1);
+    expect(zones).toHaveLength(1);
+  });
 });
 
 // Four unit squares in a 2x2 grid: [0][1] on top, [2][3] on bottom.
@@ -395,6 +430,31 @@ describe('mergeBlocksToZones — bounded size variance and runt absorption', () 
     expect(zones).toHaveLength(1);
     const total = blocks.reduce((s, b) => s + turf.area(b), 0);
     expect(turf.area(zones[0]) / total).toBeCloseTo(1, 3);
+  });
+
+  it('splits a multi-part block into one contiguous zone per part', () => {
+    // turf.intersect can clip a face crossing the boundary twice into a
+    // MultiPolygon "block". If that survives into a zone, the zone's number
+    // renders on every detached part (duplicate "7"s / "13"s field bug).
+    // Every emitted zone must be a single contiguous Polygon.
+    const twoParts = turf.multiPolygon([
+      [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]],
+      [[[3, 0], [4, 0], [4, 1], [3, 1], [3, 0]]],
+    ]);
+    const zones = mergeBlocksToZones([twoParts], [], 2);
+    expect(zones).toHaveLength(2);
+    for (const z of zones) expect(z.geometry.type).toBe('Polygon');
+  });
+
+  it('drops a tiny zone that touches nothing instead of merging it into a distant host', () => {
+    // Field bug follow-up: the nearest-centroid fallback unioned a detached
+    // sliver into a zone it never touched, producing a multi-part zone whose
+    // number rendered on every part (duplicate "13"s on the map). A tiny zone
+    // with no geometric neighbor is an artifact — drop it, never teleport it.
+    const blocks = [SQW(0, 1), SQW(3, 0.01)]; // gap between them — nothing shared
+    const zones = mergeBlocksToZones(blocks, [], 2);
+    expect(zones).toHaveLength(1);
+    expect(turf.area(zones[0]) / turf.area(blocks[0])).toBeCloseTo(1, 3);
   });
 
   it('folds a graph-isolated runt into its geometric neighbor when adjacency missed the touch', () => {
