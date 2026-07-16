@@ -127,6 +127,25 @@ describe('buildBlocks', () => {
     expect(covered / turf.area(GRID_BOUNDARY)).toBeGreaterThan(0.999);
   });
 
+  it('grid-subdivides an oversized block that has no internal streets to refine with', () => {
+    // A large park has no streets, so refineStreets can never split it via
+    // buildBlocks recursion (zero edges = one unchanged block). Field bug:
+    // it survived as ONE unsplittable "massive" zone regardless of size.
+    // It must fall back to a plain grid split, like the boundary-wide grid
+    // fallback (grid.js) does when there's no street data at all.
+    const BIG = turf.polygon([[[0, 0], [0.03, 0], [0.03, 0.03], [0, 0.03], [0, 0]]]); // ~3.3km square, no streets
+    const { blocks } = buildBlocks(BIG, [], [], {
+      maxBlockAreaM2: turf.area(BIG) * 2, // don't let the plausibility cap reject it
+      refineStreets: [], // no streets anywhere — this block can't be split by roads
+      targetZoneCount: 6,
+    });
+    // (refineStreets is deliberately [] not omitted — even zero streets must
+    // still trigger the grid-subdivision fallback for an oversized block)
+    expect(blocks.length).toBeGreaterThan(1);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
+  });
+
   it('dissolves a dual-carriageway median sliver into a neighbor block', () => {
     // Two parallel hard lines ~22m apart — a divided road. The strip between
     // the centerlines polygonizes into a face no searcher can be assigned
@@ -295,14 +314,16 @@ describe('computeBlockEfforts', () => {
   const SQ2 = turf.polygon([[[0.003, 0], [0.006, 0], [0.006, 0.003], [0.003, 0.003], [0.003, 0]]]);
 
   it('weights blocks by the street length inside them', () => {
-    // 3 street segments inside block 1, none in block 2
-    const streets = [
-      turf.lineString([[0.0005, 0.0008], [0.0025, 0.0008]]),
-      turf.lineString([[0.0005, 0.0015], [0.0025, 0.0015]]),
-      turf.lineString([[0.0005, 0.0022], [0.0025, 0.0022]]),
-    ];
+    // A dense residential grid inside block 1, nothing inside block 2. Open
+    // ground now costs about as much as typical residential street density
+    // (2026-07-16: parks are searchable, not discounted), so a fair
+    // comparison needs a genuinely dense grid, not a couple of lines.
+    const streets = Array.from({ length: 8 }, (_, i) => {
+      const y = 0.0002 + i * 0.0003;
+      return turf.lineString([[0.0002, y], [0.0028, y]]);
+    });
     const [e1, e2] = computeBlockEfforts([SQ1, SQ2], streets);
-    expect(e1).toBeGreaterThan(e2 * 2);
+    expect(e1).toBeGreaterThan(e2 * 1.5);
   });
 
   it('gives a street-less block an open-ground floor proportional to its area', () => {
@@ -338,6 +359,29 @@ describe('mergeBlocksToZones with explicit efforts (street-length balancing)', (
     const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
     expect(widths[0]).toBeCloseTo(1, 5);
     expect(widths[1]).toBeCloseTo(3, 5);
+  });
+});
+
+describe('mergeBlocksToZones — outlier region does not distort runt thresholds', () => {
+  const SQW = (x, w) => turf.polygon([[[x, 0], [x + w, 0], [x + w, 1], [x, 1], [x, 0]]]);
+
+  it('does not fold legitimately-sized zones into each other because one huge region skews the average', () => {
+    // Field bug (2026-07-16): a large low-street-density block (a park) forms
+    // ONE outsized, unsplittable region. The runt/area thresholds averaged
+    // AREA and WEIGHT across ALL regions in the compartment — that huge
+    // region inflated the average enough that every normal small zone next
+    // to it looked like a runt by comparison, and they got folded together,
+    // collapsing 25 requested zones down to 15. The threshold must resist
+    // one outlier — median, not mean.
+    const hugeBlock = SQW(0, 500);           // effort/area both huge
+    const smallBlocks = [1, 2, 3, 4, 5].map(x => SQW(x, 1)); // 5 ordinary 1-wide blocks
+    const blocks = [hugeBlock, ...smallBlocks];
+    const adj = [0, 1, 2, 3, 4].map(i => ({ a: i, b: i + 1, hard: false }));
+    const efforts = [500, 1, 1, 1, 1, 1];
+    const zones = mergeBlocksToZones(blocks, adj, 6, { efforts });
+    // the huge block stands alone; the 5 ordinary blocks must survive as
+    // their own zones too, not get swallowed into 1-2 mega zones
+    expect(zones.length).toBeGreaterThanOrEqual(5);
   });
 });
 
@@ -539,6 +583,19 @@ describe('mergeBlocksToZones — bounded size variance and runt absorption', () 
     const zones = mergeBlocksToZones(blocks, [], 2);
     expect(zones).toHaveLength(1);
     expect(turf.area(zones[0]) / turf.area(blocks[0])).toBeCloseTo(1, 3);
+  });
+
+  it('drops a tiny zone that only touches a neighbor at a single point (no real edge)', () => {
+    // Two squares meeting only at a shared corner point pass booleanIntersects
+    // but have zero shared EDGE length — turf.union of a point-touch returns a
+    // MultiPolygon (Westlake field regression: multiPart went 0 -> 1 after
+    // adding this sweep). A point-touch must be treated as "touches nothing"
+    // and dropped, not unioned.
+    const tiny = turf.polygon([[[1, 1], [1.01, 1], [1.01, 1.01], [1, 1.01], [1, 1]]]);
+    const big = SQW(0, 1); // corner (1,1) touches tiny's corner (1,1) — point only
+    const zones = mergeBlocksToZones([big, tiny], [], 2);
+    expect(zones).toHaveLength(1);
+    expect(zones[0].geometry.type).toBe('Polygon');
   });
 
   it('folds a graph-isolated runt into its geometric neighbor when adjacency missed the touch', () => {

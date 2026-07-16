@@ -1,4 +1,5 @@
 import * as turf from '@turf/turf';
+import { gridZones } from './grid';
 
 // Largest-remainder allocation: split `total` zones across boundaries
 // proportionally to `weights` (their block counts), minimum 1 each, summing
@@ -275,18 +276,27 @@ export function buildBlocks(boundary, hardLines, softLines, {
   // block forces one giant zone over a visibly dense area (Beverly Hills field
   // feedback: 153 street-km in a single block). Any block whose full-detail
   // street effort exceeds a zone's share is re-polygonized with those streets,
-  // LOCALLY — sparse areas keep their coarse, fast blocks.
-  if (refineStreets?.length && targetZoneCount > 0 && blocks.length) {
-    const efforts = computeBlockEfforts(blocks, refineStreets);
+  // LOCALLY — sparse areas keep their coarse, fast blocks. A block with open
+  // ground and no internal streets (a park) has nothing to re-polygonize with,
+  // so it falls back to a plain grid split (same technique as the boundary-
+  // wide grid fallback in grid.js) — otherwise it survives as one unsplittable
+  // "massive" zone no matter how large (field feedback 2026-07-16).
+  if (targetZoneCount > 0 && blocks.length) {
+    const streets = refineStreets ?? [];
+    const efforts = computeBlockEfforts(blocks, streets);
     const targetEffort = (efforts.reduce((s, e) => s + e, 0) / targetZoneCount) * REFINE_EFFORT_FACTOR;
-    const lineBboxes = refineStreets.map(l => turf.bbox(l));
+    const lineBboxes = streets.map(l => turf.bbox(l));
     blocks = blocks.flatMap((b, i) => {
       if (efforts[i] <= targetEffort) return [b];
       const bb = turf.bbox(b);
-      const local = refineStreets.filter((l, li) => bboxesTouch(lineBboxes[li], bb));
+      const local = streets.filter((l, li) => bboxesTouch(lineBboxes[li], bb));
+      let sub = null;
+      try { sub = buildBlocks(b, [], local, { maxBlockAreaM2, skipAdjacency: true }); } catch { /* fall through to grid */ }
+      if (sub?.blocks.length > 1) return sub.blocks;
       try {
-        const sub = buildBlocks(b, [], local, { maxBlockAreaM2, skipAdjacency: true });
-        return sub.blocks.length ? sub.blocks : [b];
+        const cellCount = Math.max(2, Math.round(efforts[i] / targetEffort));
+        const cells = gridZones(b, cellCount);
+        return cells.length > 1 ? cells : [b];
       } catch { return [b]; }
     });
   }
@@ -324,6 +334,14 @@ export function buildBlocks(boundary, hardLines, softLines, {
 // Finally, runt zones — dramatically lighter than average, i.e. the sliver
 // confetti command explicitly doesn't want — are absorbed into their lightest
 // soft-adjacent neighbor, even if that lands under the requested count.
+function median(arr) {
+  const s = [...arr].sort((a, b) => a - b);
+  const n = s.length;
+  if (!n) return 0;
+  const mid = Math.floor(n / 2);
+  return n % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
 export const BLOCK_EFFORT_EXPONENT = 0.5;
 const RUNT_FRACTION = 0.25;
 
@@ -333,10 +351,14 @@ const RUNT_FRACTION = 0.25;
 // wrong at city LOD, where block size reflects major-road spacing: one mega
 // block over the dense Beverly Hills grid "weighed" less than the same area
 // cut fine, producing huge zones over visibly dense areas (field feedback
-// 2026-07-15). Open ground still takes effort to sweep — each m² counts as
-// this many street-equivalent meters (LA residential runs ~0.015-0.02 m/m²,
-// so open ground ≈ a quarter of residential effort). Tunable.
-export const OPEN_GROUND_M_PER_M2 = 0.005;
+// 2026-07-15). Open ground (parks, hillsides) is real searchable territory,
+// not a discount bin — a park still needs a systematic sweep, arguably a
+// denser one with no streets to organize along. Set at the same order as
+// typical LA residential density (~0.015-0.02 m/m²) so parks are NOT
+// under-weighted relative to streets (field feedback 2026-07-16: a park was
+// treated as nearly free, ballooning into one massive zone while real dense
+// zones next to it starved down to slivers). Tunable.
+export const OPEN_GROUND_M_PER_M2 = 0.018;
 
 // Effort per block = full-detail street meters inside it (each segment counted
 // by its midpoint) + the open-ground allowance for the block's area.
@@ -458,18 +480,24 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {
     }
   });
 
-  // Runt absorption. Threshold is fixed from the initial average so the loop
-  // terminates and results don't depend on absorption order. Soft neighbors are
-  // preferred; a runt with NO live soft neighbor may absorb across a hard edge
-  // as a last resort — dual-carriageway medians and hard-road corner cutoffs
-  // polygonize into slivers walled by hard edges on every side (Beverly Hills /
-  // West Adams field bug: 25 requested → 38 built, 16 of them median confetti),
-  // and those are artifacts, not searchable territory. Non-runt zones still
-  // never cross a hard road.
+  // Runt absorption. Threshold is fixed from the initial distribution so the
+  // loop terminates and results don't depend on absorption order. Soft
+  // neighbors are preferred; a runt with NO live soft neighbor may absorb
+  // across a hard edge as a last resort — dual-carriageway medians and
+  // hard-road corner cutoffs polygonize into slivers walled by hard edges on
+  // every side (Beverly Hills / West Adams field bug: 25 requested → 38
+  // built, 16 of them median confetti), and those are artifacts, not
+  // searchable territory. Non-runt zones still never cross a hard road.
+  //
+  // MEDIAN, not mean: one unsplittable outlier region (a park with 100x the
+  // area or effort of everything around it) blows out a mean enough that
+  // every normal-sized zone next to it looks like a runt by comparison and
+  // gets folded together, collapsing the requested count (field feedback
+  // 2026-07-16: 25 requested → 15 built). The median resists that outlier.
   const regionOf = new Array(blocks.length);
   regions.forEach((r, ri) => r.blocks.forEach(b => { regionOf[b] = ri; }));
-  const runtThreshold = (regions.reduce((s, r) => s + r.weight, 0) / regions.length) * RUNT_FRACTION;
-  const areaThreshold = (regions.reduce((s, r) => s + r.areaM2, 0) / regions.length) * RUNT_AREA_FRACTION;
+  const runtThreshold = median(regions.map(r => r.weight)) * RUNT_FRACTION;
+  const areaThreshold = median(regions.map(r => r.areaM2)) * RUNT_AREA_FRACTION;
   let changed = true;
   while (changed) {
     changed = false;
@@ -525,11 +553,13 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {
     if (idx === -1) break;
     const tiny = polys[idx];
     const rest = polys.filter((_, i) => i !== idx);
-    let best = -1, bestLen = -1;
+    // require a real shared EDGE (lineOverlap length > 0), not just
+    // booleanIntersects — two polygons meeting at a single point pass
+    // booleanIntersects but turf.union of a point-touch returns a
+    // MultiPolygon, which is exactly the duplicate-label bug this sweep
+    // exists to prevent.
+    let best = -1, bestLen = 0;
     for (let i = 0; i < rest.length; i++) {
-      let touches = false;
-      try { touches = turf.booleanIntersects(tiny, rest[i]); } catch {}
-      if (!touches) continue;
       let len = 0;
       try {
         const ov = turf.lineOverlap(turf.polygonToLine(tiny), turf.polygonToLine(rest[i]), { tolerance: 0.01 });
@@ -538,13 +568,21 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {
       if (len > bestLen) { bestLen = len; best = i; }
     }
     if (best === -1) {
-      // touches nothing — an artifact, not territory. Dropping beats merging
-      // into a distant host: a detached union renders as a multi-part zone
-      // whose number appears on every part (duplicate-label field bug).
+      // touches nothing by a real edge — an artifact, not territory.
+      // Dropping beats merging into a distant host: a detached union renders
+      // as a multi-part zone whose number appears on every part
+      // (duplicate-label field bug).
       polys = rest;
       continue;
     }
-    try { rest[best] = turf.union(rest[best], tiny); } catch { break; }
+    let union;
+    try { union = turf.union(rest[best], tiny); } catch { break; }
+    // safety net: even a real-edge union can occasionally return a
+    // MultiPolygon (topology edge cases) — keep only the largest part rather
+    // than let a multi-part zone escape.
+    rest[best] = union.geometry.type === 'MultiPolygon'
+      ? turf.polygon(union.geometry.coordinates.reduce((a, b) => (turf.area(turf.polygon(a)) >= turf.area(turf.polygon(b)) ? a : b)))
+      : union;
     polys = rest;
   }
   return polys;
