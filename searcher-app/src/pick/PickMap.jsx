@@ -20,6 +20,7 @@ export function PickMap({ zones, onZoneClick }) {
   // re-trigger that effect, so if Firestore data arrives before the map does
   // (the common case), the zone layer would otherwise stay empty forever.
   const [mapLoaded, setMapLoaded] = useState(false);
+  const hasFitRef = useRef(false);
   useEffect(() => { onZoneClickRef.current = onZoneClick; }, [onZoneClick]);
 
   useEffect(() => {
@@ -28,6 +29,7 @@ export function PickMap({ zones, onZoneClick }) {
       zonesWithGeometry.map(z => ({ type: 'Feature', geometry: z.polygon, properties: { id: z.id } }))
     );
     const bbox = fc.features.length ? turf.bbox(fc) : undefined;
+    hasFitRef.current = !!bbox;
     const map = new mapboxgl.Map({
       container: containerRef.current,
       style: 'mapbox://styles/mapbox/streets-v12',
@@ -67,9 +69,10 @@ export function PickMap({ zones, onZoneClick }) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapLoaded) return;
+    const zonesWithGeometry = zones.filter(z => z.polygon);
     map.getSource('zones')?.setData(
       turf.featureCollection(
-        zones.filter(z => z.polygon).map(z => ({
+        zonesWithGeometry.map(z => ({
           type: 'Feature',
           geometry: z.polygon,
           properties: {
@@ -80,6 +83,16 @@ export function PickMap({ zones, onZoneClick }) {
         }))
       )
     );
+    // Zones arrive via an async Firestore listener, so the map is often built
+    // (see the mount effect above) before any geometry exists — camera falls
+    // back to a whole-Earth view. Once real geometry shows up, snap to it.
+    if (!hasFitRef.current && zonesWithGeometry.length) {
+      hasFitRef.current = true;
+      const bbox = turf.bbox(turf.featureCollection(
+        zonesWithGeometry.map(z => ({ type: 'Feature', geometry: z.polygon, properties: {} }))
+      ));
+      map.fitBounds(bbox, { padding: 40, duration: 0 });
+    }
   }, [zones, mapLoaded]);
 
   return <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />;

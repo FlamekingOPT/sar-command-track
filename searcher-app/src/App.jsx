@@ -117,6 +117,20 @@ export default function App() {
         />
       )}
 
+      {zone.status === 'searched' && (
+        <a
+          href={`/pick/${link.searchId}`}
+          style={{
+            position: 'fixed', bottom: 84, left: 16, right: 16, zIndex: 10,
+            display: 'block', textAlign: 'center',
+            padding: 14, fontSize: 16, fontWeight: 700, borderRadius: 12,
+            color: '#fff', background: '#2563eb', textDecoration: 'none',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+          }}>
+          Pick another zone
+        </a>
+      )}
+
       <StatusButton
         status={zone.status}
         onComplete={() => handleStatusChange('searched')}
