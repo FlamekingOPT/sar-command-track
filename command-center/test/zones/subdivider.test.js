@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2 } from '../../src/zones/subdivider.js';
+import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2, isoperimetricQuotient } from '../../src/zones/subdivider.js';
 
 describe('allocateZoneCounts', () => {
   it('splits proportionally by block count and sums exactly to the total', () => {
@@ -240,6 +240,39 @@ describe('buildBlocks', () => {
     expect(adjacency[0].hard).toBe(false);
     const zones = mergeBlocksToZones(blocks, adjacency, 1);
     expect(zones).toHaveLength(1);
+  });
+});
+
+describe('isoperimetricQuotient', () => {
+  it('scores a square higher than a thin sliver of similar area', () => {
+    const squarish = turf.polygon([[[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01], [0, 0]]]);
+    const sliver = turf.polygon([[[0, 0], [0.05, 0], [0.05, 0.0005], [0, 0.0005], [0, 0]]]);
+    expect(isoperimetricQuotient(squarish)).toBeGreaterThan(isoperimetricQuotient(sliver));
+    expect(isoperimetricQuotient(squarish)).toBeGreaterThan(0.7);
+  });
+});
+
+describe('sharedAdjacency road class (via buildBlocks adjacency)', () => {
+  it('reports the soft road class nearest a soft-adjacent border', () => {
+    const classedSoft = [
+      turf.lineString([[-0.01, 0.0015], [0.0015, 0.0015]], { highway: 'tertiary' }),
+      turf.lineString([[0.0015, 0.0015], [0.013, 0.0015]], { highway: 'tertiary' }),
+    ];
+    const { adjacency } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, classedSoft);
+    const softEdge = adjacency.find(a => a.hard === false);
+    expect(softEdge.roadClass).toBe('tertiary');
+  });
+
+  it('reports a null road class when the fixture lines carry no highway property', () => {
+    const { adjacency } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, SOFT_HORIZONTAL);
+    const softEdge = adjacency.find(a => a.hard === false);
+    expect(softEdge.roadClass).toBeNull();
+  });
+
+  it('reports a null road class on a hard-adjacent border (scored separately by the hard-road penalty)', () => {
+    const { adjacency } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, SOFT_HORIZONTAL);
+    const hardEdge = adjacency.find(a => a.hard === true);
+    expect(hardEdge.roadClass).toBeNull();
   });
 });
 

@@ -144,7 +144,33 @@ function buildEdgeSet(boundary, hardLines, softLines) {
   return { edges, bbox };
 }
 
-function sharedAdjacency(polyA, polyB, hardLines) {
+const BOUNDARY_ROAD_MATCH_TOLERANCE_M = 15;
+// Boundary-quality scoring (2026-07-19 spec, Part B): a shared border that
+// lands on a real, sizeable road reads better to command than one that cuts
+// through the middle of an ordinary block. secondary/tertiary score highest;
+// residential/living_street/unclassified score low; no nearby road scores 0.
+// Hard classes aren't listed here — a hard-adjacent border is scored by the
+// separate hard-road-crossing penalty in refineZoneBoundaries (Task 6), not
+// this table.
+export const ROAD_CLASS_QUALITY = {
+  secondary: 1.0,
+  tertiary: 0.7,
+  residential: 0.3,
+  living_street: 0.3,
+  unclassified: 0.2,
+};
+
+function nearestRoadClass(point, lines) {
+  let best = null, bestD = Infinity;
+  for (const line of lines) {
+    let d;
+    try { d = turf.pointToLineDistance(point, line, { units: 'meters' }); } catch { continue; }
+    if (d < bestD) { bestD = d; best = line.properties?.highway ?? null; }
+  }
+  return bestD <= BOUNDARY_ROAD_MATCH_TOLERANCE_M ? best : null;
+}
+
+function sharedAdjacency(polyA, polyB, hardLines, softLines = []) {
   let overlap;
   try {
     overlap = turf.lineOverlap(turf.polygonToLine(polyA), turf.polygonToLine(polyB), { tolerance: 0.003 });
@@ -165,7 +191,19 @@ function sharedAdjacency(polyA, polyB, hardLines) {
   for (const h of hardLines) {
     try { minD = Math.min(minD, turf.pointToLineDistance(mid, h, { units: 'meters' })); } catch {}
   }
-  return { hard: minD < HARD_BARRIER_TOLERANCE_M };
+  const hard = minD < HARD_BARRIER_TOLERANCE_M;
+  return { hard, roadClass: hard ? null : nearestRoadClass(mid, softLines) };
+}
+
+// Isoperimetric quotient: 1.0 for a circle, lower for elongated/notched
+// shapes. Used by refineZoneBoundaries (2026-07-19 spec, Part B, Task 6) to
+// score whether a candidate move makes a zone's shape rounder or worse.
+export function isoperimetricQuotient(poly) {
+  const area = turf.area(poly);
+  let perimM;
+  try { perimM = turf.length(turf.polygonToLine(poly), { units: 'kilometers' }) * 1000; }
+  catch { return 0; }
+  return perimM > 0 ? (4 * Math.PI * area) / (perimM * perimM) : 0;
 }
 
 // maxBlockAreaM2 rejects polygonize artifacts (faces leaking past real
@@ -370,8 +408,8 @@ export function buildBlocks(boundary, hardLines, softLines, {
   if (!skipAdjacency) {
     for (let i = 0; i < blocks.length; i++) {
       for (let j = i + 1; j < blocks.length; j++) {
-        const adj = sharedAdjacency(blocks[i], blocks[j], hardLines);
-        if (adj) adjacency.push({ a: i, b: j, hard: adj.hard });
+        const adj = sharedAdjacency(blocks[i], blocks[j], hardLines, softLines);
+        if (adj) adjacency.push({ a: i, b: j, hard: adj.hard, roadClass: adj.roadClass });
       }
     }
   }
