@@ -128,7 +128,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         const label = targets.length > 1 ? ` (boundary ${i + 1} of ${targets.length})` : '';
         try {
           setGeneratingStatus(`Fetching map data…${label}`);
-          const { hardLines, softLines, allStreetLines } = await fetchStreets(t.feature, {
+          const { hardLines, softLines, allStreetLines, terrainPolygons, terrainPaths } = await fetchStreets(t.feature, {
             detail: selectDetail(areaM2, estAlloc),
             onProgress: (done, total) => {
               if (total > 1) setGeneratingStatus(`Fetching map data…${label} tile ${Math.min(done + 1, total)}/${total}`);
@@ -146,6 +146,8 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
             // re-polygonized at full detail so dense areas can split
             refineStreets: allStreetLines,
             targetZoneCount: estAlloc,
+            terrainPolygons,
+            terrainPaths,
           });
           // real workload per block: full-detail street meters (+ open-ground
           // allowance) — zones balance search effort, not a block-size proxy
