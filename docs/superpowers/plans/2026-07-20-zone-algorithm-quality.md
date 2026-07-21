@@ -298,8 +298,12 @@ function classifyWays(elements) {
     // (golf/park/cemetery/wood) and bare paths/footways are classified
     // separately by classifyTerrainFeatures below (2026-07-19 spec, issue #1)
     // — an untagged or terrain-tagged way must not fall through into
-    // softLines as if it were an ordinary internal street.
+    // softLines as if it were an ordinary internal street. Path/footway ways
+    // in particular must NOT also land in softLines: they're only meant to
+    // be available scoped to a terrain feature's local split (Task 3), not as
+    // ordinary internal streets fragmenting every block city-wide.
     if (!highway && !waterway) continue;
+    if (highway === 'path' || highway === 'footway') continue;
     const line = turf.lineString(el.geometry.map(pt => [pt.lon, pt.lat]), {
       name: el.tags?.name ?? '',
       highway: waterway ? 'waterway' : highway,
@@ -382,7 +386,7 @@ Expected: all PASS, including the new `classifyWays road class tagging` and `cla
 - [ ] **Step 6: Run the full test suite**
 
 Run: `cd command-center && npx vitest run`
-Expected: all PASS. (The existing `fetchStreetGraph` test `'classifies motorway/trunk/primary and waterways as hard, everything else fetched as soft'` at line 37 asserts `softLines` has length 3 including a footway — check this still holds: the footway in that fixture has no `leisure`/`landuse`/`natural` tag, so `classifyWays`'s new `if (!highway && !waterway) continue;` guard does NOT skip it — highway IS set (`'footway'`) — so it still lands in softLines exactly as before. This task's classifyWays change only skips ways with **neither** highway **nor** waterway, which footway ways always have. Confirm this test still passes unmodified.)
+Expected: all PASS, WITH one deliberate exception: the three pre-existing `fetchStreetGraph` tests whose fixture includes a footway way (`'classifies motorway/trunk/primary and waterways as hard, everything else fetched as soft'` and the two Overpass-fallback/timeout tests that share the same fixture) currently assert `softLines` has length 3, including that footway. Per the corrected `classifyWays` above (which now excludes `highway === 'path' || 'footway'`, not just untagged/terrain-tagged ways — this exclusion was missing from an earlier draft of this plan and is corrected here), the footway no longer lands in `softLines` at all. Update those three assertions from `toHaveLength(3)` to `toHaveLength(2)` as part of this task — this is an intentional behavior change (a footway must only be available via `terrainPaths`, scoped to terrain-feature splitting, never as an ordinary internal street fragmenting every block city-wide), not a regression to avoid.
 
 - [ ] **Step 7: Commit**
 
