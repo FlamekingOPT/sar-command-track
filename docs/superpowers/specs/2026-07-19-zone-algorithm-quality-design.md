@@ -53,6 +53,18 @@ A move is applied only if its combined score is clearly positive (threshold cons
 
 **Data flow change required:** `mergeBlocksToZones` currently discards which blocks belong to which zone once it builds final polygons (`polys = regions.filter(...).map(...)`). It needs to expose the region→block-indices mapping (or run refinement before that flattening step) so Part B can operate on block membership directly rather than re-deriving it from geometry.
 
+## Field validation (2026-07-20, real "150"-zone West LA search, `Bind: Z5CJ`)
+
+Jack generated a real 143-zone search spanning Hollywood to Venice and spotted zone 95 looking wrong. Rather than eyeball it, we pulled the actual zone GeoJSON out of the running Command Center (via the Mapbox source data) and checked it geometrically against the cached street tiles. Confirms this design is targeting real, currently-occurring problems, not hypothetical ones:
+
+- **Zone 95 genuinely crosses the San Diego Freeway (405)** — multiple full segments of the freeway (tagged `motorway`, a `HARD_HIGHWAYS` entry) sit entirely inside its polygon, not just at the boundary. Root cause: the "last resort" rule in `mergeBlocksToZones` (a hard-road-isolated runt with no soft neighbor may absorb across a hard edge) fired for a real, walkable pocket of streets — not a negligible median artifact, which is what that rule was written for. The result is a zone a searcher can't complete without crossing an active freeway on foot. This is exactly the issue #3 scenario, but demonstrates the current binary "last resort" rule is too permissive — Part B's continuous hard-road-crossing penalty (weighed against actual weight-balance gain) is meant to replace this, and needs to come out clearly negative for a case like this.
+- **Zone 86: compactness 0.039** (worst in the search) — 14km of perimeter enclosing only 0.6km², i.e. a wildly notched/jagged shape, not merely elongated. The most extreme real-world confirmation yet of issue #2 (zero shape objective in growth).
+- **Zone 2: 0.009 km²** (9,300 m², aspect ratio 5.2 — roughly a 500m×20m sliver) — a real standing-sliver instance, issue #4.
+- Other zones scoring under 0.25 compactness in this one search: 89, 27, 29, 87, 92, 88, 105, 85, 75, 13, 116, 36, 66 — issue #2 is not a rare edge case at this boundary size, it's common.
+- **Barry Avenue is fragmented across 4 different zones** (93, 95, 125, 137) along its length, rather than following one sensible line (e.g. "everything west of Barry") — a direct symptom of growth drawing arbitrary internal seams with no boundary-quality signal, same mechanism as the Vermont Ave case issue #5 describes.
+
+**New, separate finding — zone numbering doesn't hold up at this boundary's scale/shape.** `orderZonesForNumbering` bands zones into `sqrt(n)` latitude rows and snakes W↔E per row; this was validated on compact single-neighborhood boundaries (WeHo/Beverly Hills, ~158 zones) but breaks down on a large, irregularly-shaped, multi-neighborhood span like this one (Hollywood to Venice, ~15km). Measured directly: average number gap between a zone and its nearest geographic neighbor is **10.1** (out of 143 zones); worst cases pair zones ~500-800m apart with numbers **27-38 apart** (e.g. zone 88 next to zone 50, zone 92 next to zone 129). This is a distinct, undesigned issue in `orderZonesForNumbering`, not part of this spec's scope (`buildBlocks`/`mergeBlocksToZones`) — logged separately in the handoff backlog for its own brainstorming pass.
+
 ## Testing
 
 Extend `subdivider.test.js`/`overpass.test.js` with:
