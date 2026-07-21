@@ -146,6 +146,46 @@ describe('buildBlocks', () => {
     expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
   });
 
+  it('splits an oversized block along a golf-course feature instead of a blind grid', () => {
+    // A golf-course polygon fills the right half of an oversized, streetless
+    // block. With no internal streets to refine with, the old behavior fell
+    // back to gridZones — a straight rectangular cut with no regard for the
+    // feature's shape (field bug 2026-07-16, 2026-07-19 spec issue #1).
+    // Passing the feature's own ring as a local edge must make the split
+    // follow it instead.
+    const BIG = turf.polygon([[[0, 0], [0.02, 0], [0.02, 0.02], [0, 0.02], [0, 0]]]); // ~2.2km square, no streets
+    const golfCourse = turf.polygon([[[0.01, 0], [0.02, 0], [0.02, 0.02], [0.01, 0.02], [0.01, 0]]]); // right half
+    const { blocks } = buildBlocks(BIG, [], [], {
+      maxBlockAreaM2: turf.area(BIG) * 2,
+      refineStreets: [],
+      targetZoneCount: 2,
+      terrainPolygons: [golfCourse],
+    });
+    expect(blocks.length).toBeGreaterThan(1);
+    const matchesGolfCourse = blocks.some(b => {
+      let inter;
+      try { inter = turf.intersect(b, golfCourse); } catch { return false; }
+      return inter && turf.area(inter) / turf.area(golfCourse) > 0.95;
+    });
+    expect(matchesGolfCourse).toBe(true);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
+  });
+
+  it('still falls back to gridZones when the terrain feature covers the whole block and has no internal paths', () => {
+    // A terrain polygon identical to the block itself has no residual area to
+    // form a second block from — its own ring can't split it. Must still fall
+    // back to grid, matching pre-existing behavior.
+    const BIG = turf.polygon([[[0, 0], [0.02, 0], [0.02, 0.02], [0, 0.02], [0, 0]]]);
+    const { blocks } = buildBlocks(BIG, [], [], {
+      maxBlockAreaM2: turf.area(BIG) * 2,
+      refineStreets: [],
+      targetZoneCount: 3,
+      terrainPolygons: [BIG],
+    });
+    expect(blocks.length).toBeGreaterThan(1);
+  });
+
   it('keeps an isolated thin-but-real-area sliver instead of erasing it (real park coverage gap)', () => {
     // Field bug (2026-07-16 screenshot, a Kenneth Hahn / Baldwin Hills-style
     // park): a winding internal path carved off an elongated meadow lobe with

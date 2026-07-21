@@ -288,6 +288,8 @@ export function buildBlocks(boundary, hardLines, softLines, {
   refineStreets = null,
   targetZoneCount = 0,
   skipAdjacency = false,
+  terrainPolygons = [],
+  terrainPaths = [],
 } = {}) {
   const { edges, bbox } = buildEdgeSet(boundary, hardLines, softLines);
   const paddedBoundary = turf.bboxPolygon(bbox);
@@ -327,10 +329,32 @@ export function buildBlocks(boundary, hardLines, softLines, {
     const efforts = computeBlockEfforts(blocks, streets);
     const targetEffort = (efforts.reduce((s, e) => s + e, 0) / targetZoneCount) * REFINE_EFFORT_FACTOR;
     const lineBboxes = streets.map(l => turf.bbox(l));
+    const terrainBboxes = terrainPolygons.map(t => turf.bbox(t));
+    const pathBboxes = terrainPaths.map(p => turf.bbox(p));
     blocks = blocks.flatMap((b, i) => {
       if (efforts[i] <= targetEffort) return [b];
       const bb = turf.bbox(b);
       const local = streets.filter((l, li) => bboxesTouch(lineBboxes[li], bb));
+
+      // A terrain feature (golf/park/cemetery/wood) overlapping this block
+      // has a real shape to split along — try it before falling back to a
+      // blind grid (2026-07-19 spec, issue #1: a golf course was cut straight
+      // through by gridZones because it was invisible to the algorithm).
+      const overlappingTerrain = terrainPolygons.filter((t, ti) => {
+        if (!bboxesTouch(terrainBboxes[ti], bb)) return false;
+        try { return turf.booleanIntersects(t, b); } catch { return false; }
+      });
+      if (overlappingTerrain.length) {
+        const terrainEdges = overlappingTerrain.flatMap(t => {
+          try { return [turf.polygonToLine(t)]; } catch { return []; }
+        });
+        const localPaths = terrainPaths.filter((p, pi) => bboxesTouch(pathBboxes[pi], bb));
+        try {
+          const terrainSplit = buildBlocks(b, [], [...local, ...terrainEdges, ...localPaths], { maxBlockAreaM2, skipAdjacency: true });
+          if (terrainSplit.blocks.length > 1) return terrainSplit.blocks;
+        } catch { /* fall through to the plain-street / grid attempts below */ }
+      }
+
       let sub = null;
       try { sub = buildBlocks(b, [], local, { maxBlockAreaM2, skipAdjacency: true }); } catch { /* fall through to grid */ }
       if (sub?.blocks.length > 1) return sub.blocks;
