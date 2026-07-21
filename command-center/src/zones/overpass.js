@@ -101,10 +101,54 @@ function classifyWays(elements) {
     if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
     const highway = el.tags?.highway;
     const waterway = el.tags?.waterway;
-    const line = turf.lineString(el.geometry.map(pt => [pt.lon, pt.lat]), { name: el.tags?.name ?? '' });
+    // Only real streets/waterways become zoning edges. Terrain features
+    // (golf/park/cemetery/wood) and bare paths/footways are classified
+    // separately by classifyTerrainFeatures below (2026-07-19 spec, issue #1)
+    // — an untagged or terrain-tagged way must not fall through into
+    // softLines as if it were an ordinary internal street.
+    if (!highway && !waterway) continue;
+    // Skip path/footway: these are handled by classifyTerrainFeatures
+    if (highway === 'path' || highway === 'footway') continue;
+    const line = turf.lineString(el.geometry.map(pt => [pt.lon, pt.lat]), {
+      name: el.tags?.name ?? '',
+      highway: waterway ? 'waterway' : highway,
+    });
     (waterway || HARD_HIGHWAYS.includes(highway) ? hardLines : softLines).push(line);
   }
   return { hardLines, softLines };
+}
+
+const TERRAIN_POLYGON_TAGS = { leisure: ['golf_course', 'park'], landuse: ['cemetery'], natural: ['wood'] };
+
+// Builds real polygons/paths for terrain features (2026-07-19 spec, issue #1)
+// so buildBlocks' local-refinement branch (Task 3) can split an oversized
+// block along a feature's actual shape instead of a blind grid. Way-only: OSM
+// multipolygon relations for these tags (shapes with holes) are rare for
+// golf/park/cemetery and are skipped with a warning rather than handled — not
+// a blocker for this iteration.
+export function classifyTerrainFeatures(elements) {
+  const terrainPolygons = [];
+  const terrainPaths = [];
+  for (const el of elements) {
+    if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) continue;
+    const highway = el.tags?.highway;
+    if (highway === 'path' || highway === 'footway') {
+      terrainPaths.push(turf.lineString(el.geometry.map(pt => [pt.lon, pt.lat])));
+      continue;
+    }
+    const isTerrainTag = Object.entries(TERRAIN_POLYGON_TAGS)
+      .some(([key, vals]) => el.tags?.[key] && vals.includes(el.tags[key]));
+    if (!isTerrainTag) continue;
+    const coords = el.geometry.map(pt => [pt.lon, pt.lat]);
+    const first = coords[0], last = coords[coords.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1]) {
+      console.warn(`terrain feature way ${el.id ?? '(anon)'} is not a closed ring (relation-based multipolygon?) — skipped`);
+      continue;
+    }
+    try { terrainPolygons.push(turf.polygon([coords])); }
+    catch (err) { console.warn(`terrain feature way ${el.id ?? '(anon)'} failed to build a polygon: ${err.message}`); }
+  }
+  return { terrainPolygons, terrainPaths };
 }
 
 // ---- Street tile cache (spec 2026-07-14 street-tile-cache) ----
@@ -170,7 +214,11 @@ export async function fetchStreets(boundary, { detail = 'full', onProgress } = {
   const allStreetLines = all
     .filter(el => el.tags?.highway)
     .map(el => turf.lineString(el.geometry.map(pt => [pt.lon, pt.lat])));
-  return { ...classifyWays(filterByDetail(all, detail)), allStreetLines };
+  // Terrain features aren't part of the DETAIL_LEVELS road-class filter at
+  // all, so they must be classified from `all` (the pre-filter full-detail
+  // list) — filterByDetail would otherwise strip them since they carry
+  // neither a highway nor waterway tag.
+  return { ...classifyWays(filterByDetail(all, detail)), ...classifyTerrainFeatures(all), allStreetLines };
 }
 
 export async function fetchStreetGraph(boundary, { detail = 'full', onProgress } = {}) {
@@ -194,5 +242,6 @@ export async function fetchStreetGraph(boundary, { detail = 'full', onProgress }
     }
   }
   onProgress?.(tiles.length, tiles.length);
-  return classifyWays([...wayById.values()]);
+  const allElements = [...wayById.values()];
+  return { ...classifyWays(allElements), ...classifyTerrainFeatures(allElements) };
 }
