@@ -206,6 +206,127 @@ export function isoperimetricQuotient(poly) {
   return perimM > 0 ? (4 * Math.PI * area) / (perimM * perimM) : 0;
 }
 
+// Scored boundary-refinement pass (2026-07-19 spec, Part B). Runs after
+// growth + runt absorption produce `regions`, before they're flattened into
+// final polygons. Unifies four issues that used to be four separate, cruder
+// mechanisms: zero shape objective in growth (#2), the binary "last resort"
+// hard-road absorption rule (#3), standing slivers with no graph-reachable
+// neighbor (#4), and a greedy split that can't undo an early bad choice, e.g.
+// landing one block off of a better arterial (#5, the Vermont Ave case).
+//
+// Field-confirmed need (2026-07-20): a real 143-zone search produced a zone
+// that genuinely crosses the San Diego Freeway via the OLD rule's binary
+// "absorb across a hard road as last resort" — a real, walkable pocket of
+// streets got folded across an active freeway because it had no soft
+// neighbor, without ever weighing whether that was actually a good idea.
+const WEIGHT_BALANCE_SCORE_WEIGHT = 1;
+const COMPACTNESS_SCORE_WEIGHT = 1;
+const BOUNDARY_QUALITY_SCORE_WEIGHT = 1;
+const HARD_ROAD_CROSSING_PENALTY = 3;
+const MOVE_ACCEPTANCE_THRESHOLD = 0.05;
+const MAX_MOVES_PER_BLOCK = 4;
+
+function isConnected(blockIndices, allNeighbors) {
+  if (blockIndices.length <= 1) return true;
+  const set = new Set(blockIndices);
+  const seen = new Set([blockIndices[0]]);
+  const queue = [blockIndices[0]];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const nb of allNeighbors[cur] ?? []) {
+      if (set.has(nb) && !seen.has(nb)) { seen.add(nb); queue.push(nb); }
+    }
+  }
+  return seen.size === blockIndices.length;
+}
+
+export function refineZoneBoundaries(regions, blocks, adjacency, weights) {
+  const live = regions.filter(r => !r.dead);
+  if (live.length < 2) return;
+
+  const allNeighbors = blocks.map(() => []);
+  for (const e of adjacency) { allNeighbors[e.a].push(e.b); allNeighbors[e.b].push(e.a); }
+
+  const regionOf = new Array(blocks.length);
+  live.forEach(r => r.blocks.forEach(b => { regionOf[b] = r; }));
+
+  const totalWeight = weights.reduce((s, w) => s + w, 0);
+  const maxMoves = blocks.length * MAX_MOVES_PER_BLOCK;
+  let moves = 0;
+  let improved = true;
+  while (improved && moves < maxMoves) {
+    improved = false;
+    for (const e of adjacency) {
+      const ra = regionOf[e.a], rb = regionOf[e.b];
+      if (!ra || !rb || ra === rb || ra.dead || rb.dead) continue;
+
+      for (const [moving, from, to] of [[e.a, ra, rb], [e.b, rb, ra]]) {
+        // One of these two directions can dissolve `from` into `to` (see
+        // below) before the *other* direction of this same edge is
+        // evaluated — the outer ra.dead/rb.dead check above only runs once
+        // per edge, before either direction executes. Without this re-check,
+        // the second direction could still merge blocks INTO the just-killed
+        // region: `to.blocks` would gain blocks/weight while `to.dead`
+        // stayed true, and every block routed there would be silently
+        // dropped by `regions.filter(r => !r.dead)` downstream, with no
+        // adjacency edge ever able to reach it again (its region is dead, so
+        // every edge touching it is skipped by the check above from then on).
+        if (from.dead || to.dead) continue;
+
+        const remaining = from.blocks.filter(b => b !== moving);
+        if (remaining.length > 0 && !isConnected(remaining, allNeighbors)) continue;
+
+        // Fair share is recomputed against how many LIVE regions would exist
+        // after this move — a move that fully dissolves `from` (remaining
+        // empty) reduces the effective zone count by one, same as the
+        // existing runt-absorption logic already does elsewhere in this file.
+        const liveCountBefore = regions.filter(r => !r.dead).length;
+        const liveCountAfter = remaining.length > 0 ? liveCountBefore : liveCountBefore - 1;
+        const fairShareBefore = totalWeight / liveCountBefore;
+        const fairShareAfter = totalWeight / Math.max(1, liveCountAfter);
+
+        const blockWeight = weights[moving];
+        const weightDelta =
+          (Math.abs(from.weight - fairShareBefore) + Math.abs(to.weight - fairShareBefore)) -
+          ((remaining.length > 0 ? Math.abs(from.weight - blockWeight - fairShareAfter) : 0) +
+            Math.abs(to.weight + blockWeight - fairShareAfter));
+
+        let compactDelta;
+        try {
+          const fromPolyBefore = from.blocks.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[from.blocks[0]]);
+          const toPolyBefore = to.blocks.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[to.blocks[0]]);
+          const toPolyAfter = [...to.blocks, moving].slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[to.blocks[0]]);
+          const compactBefore = isoperimetricQuotient(fromPolyBefore) + isoperimetricQuotient(toPolyBefore);
+          const compactAfter = remaining.length > 0
+            ? isoperimetricQuotient(remaining.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[remaining[0]])) + isoperimetricQuotient(toPolyAfter)
+            : isoperimetricQuotient(toPolyAfter);
+          compactDelta = (compactAfter - compactBefore) / 2;
+        } catch { continue; }
+
+        const boundaryQuality = e.hard ? 0 : (ROAD_CLASS_QUALITY[e.roadClass] ?? 0);
+        const hardPenalty = e.hard ? HARD_ROAD_CROSSING_PENALTY : 0;
+
+        const score =
+          WEIGHT_BALANCE_SCORE_WEIGHT * weightDelta +
+          COMPACTNESS_SCORE_WEIGHT * compactDelta +
+          BOUNDARY_QUALITY_SCORE_WEIGHT * boundaryQuality -
+          hardPenalty;
+
+        if (score > MOVE_ACCEPTANCE_THRESHOLD) {
+          from.blocks = remaining;
+          from.weight -= blockWeight;
+          to.blocks = [...to.blocks, moving];
+          to.weight += blockWeight;
+          regionOf[moving] = to;
+          if (remaining.length === 0) from.dead = true;
+          moves++;
+          improved = true;
+        }
+      }
+    }
+  }
+}
+
 // maxBlockAreaM2 rejects polygonize artifacts (faces leaking past real
 // streets), but it MUST scale with detail level: the 0.2 km² default suits
 // full residential detail, while district/city LOD produces legitimately
