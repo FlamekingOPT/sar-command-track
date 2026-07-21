@@ -73,11 +73,23 @@ async function queryOverpass(query) {
   throw new Error(`Couldn't fetch street data from any Overpass endpoint: ${lastError?.message ?? 'unknown error'}`);
 }
 
+// Terrain features (2026-07-19 zone-algorithm-quality spec, issue #1): parks/
+// golf courses/cemeteries/wood are invisible to the algorithm without these —
+// a block containing one falls back to a blind grid split instead of
+// following the feature's real shape (field bug: a golf course cut in half by
+// a straight grid line). Fetched at every detail level, not gated by
+// DETAIL_LEVELS, since they matter to local refinement regardless of zoning
+// LOD. highway=path|footway rides along so a feature's internal paths are
+// available too — see buildBlocks' local-refinement branch (Task 3).
 function buildQuery([west, south, east, north], detail) {
   return `[out:json][timeout:25];
 (
   way["highway"~"${DETAIL_LEVELS[detail]}"](${south},${west},${north},${east});
   way["waterway"~"river|canal|stream"](${south},${west},${north},${east});
+  way["leisure"~"golf_course|park"](${south},${west},${north},${east});
+  way["landuse"~"cemetery"](${south},${west},${north},${east});
+  way["natural"~"wood"](${south},${west},${north},${east});
+  way["highway"~"path|footway"](${south},${west},${north},${east});
 );
 out geom;`;
 }

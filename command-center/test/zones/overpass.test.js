@@ -136,6 +136,26 @@ describe('fetchStreetGraph level of detail', () => {
   });
 });
 
+describe('buildQuery terrain-feature and path tags', () => {
+  const boundary = turf.polygon([[
+    [-118.30, 34.00], [-118.29, 34.00], [-118.29, 34.01], [-118.30, 34.01], [-118.30, 34.00],
+  ]]);
+
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ elements: [] }) });
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('always requests golf/park/cemetery/wood polygons and path/footway ways, regardless of detail', async () => {
+    await fetchStreetGraph(boundary, { detail: 'city' });
+    const [, options] = global.fetch.mock.calls[0];
+    expect(options.body).toContain('leisure"~"golf_course|park');
+    expect(options.body).toContain('landuse"~"cemetery');
+    expect(options.body).toContain('natural"~"wood');
+    expect(options.body).toContain('highway"~"path|footway');
+  });
+});
+
 describe('tileBboxes', () => {
   it('returns the bbox unchanged when it is under the max area', () => {
     const small = [-118.30, 34.00, -118.29, 34.01]; // ~1 km²
