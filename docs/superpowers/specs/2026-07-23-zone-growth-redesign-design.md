@@ -82,3 +82,10 @@ Extend `subdivider.test.js`:
 - Fixing the motorway-crossing bug itself (see "Known separate issue" above) — a future spec.
 - Any road-quality/boundary-snapping feature using the now-unused `roadClass` field — future work, not this redesign.
 - Renaming `mergeBlocksToZones` to better reflect that it clusters rather than grows/merges — kept the existing name to avoid touching every call site and test reference for a pure rename; the function's doc comment will explain the new mechanism.
+
+## Next session — START HERE
+
+1. Run this spec through `writing-plans` to produce an implementation plan (`docs/superpowers/plans/YYYY-MM-DD-zone-growth-redesign.md`), then execute via `subagent-driven-development`.
+2. `command-center/src/zones/subdivider.js` is at the clean Task-6-committed baseline (commit `72d11a9` of the 2026-07-20 plan) — `refineZoneBoundaries`/`isConnected`/its constants exist there and need removing per this spec, not building on top of.
+3. Throwaway validation scripts from this session's testing (`command-center/scratch-*.mjs`, untracked, not committed) contain a working prototype of the k-means clustering logic (seeding, Lloyd's iteration, non-contiguous splitting, motorway-crossing check) — useful as a reference for the real implementation, not production-ready code (no error handling for edge cases beyond what was needed to validate the idea, uses `require`-style CommonJS imports for standalone Node execution rather than this project's ES module conventions). Safe to delete once the real implementation lands.
+4. The motorway-crossing bug (see "Known separate issue" above) remains open — pick up when Jack prioritizes it, starting with the recommended fix (a post-hoc validation/repair pass) from this session's investigation.
