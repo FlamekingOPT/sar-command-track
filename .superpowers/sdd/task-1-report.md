@@ -1,49 +1,89 @@
-# Task 1 Report: Firestore Rules — `zoneRequests` Collection
+# Task 1 Report: Add terrain-feature and path/footway tags to both Overpass queries
 
-## Status: DONE_WITH_CONCERNS
+## Implementation Summary
 
-## What Was Completed
+Successfully implemented all changes specified in task-1-brief.md to add terrain feature and path/footway tags to both Overpass queries.
 
-1. **File Edit**: Successfully edited `firestore.rules` to add the `zoneRequests` collection rule block:
-   - Location: Top-level match block, between `searcherLinks` and `searches`
-   - Rules added:
-     - `allow read: if true;` (picker page polls its own request doc)
-     - `allow create: if true;` (open trust model, same as tracks/markers)
-     - `allow update: if false;` (only bot via Admin SDK can update)
+### Changes Made
 
-2. **Syntax Verification**: The updated file matches the task brief specification exactly:
-   - File: `C:\Users\Jack\dev\sar-command-track\firestore.rules`
-   - Structure is valid Firestore rules syntax
-   - Rule block placement is correct (top-level, not nested)
+1. **Test Addition** (`command-center/test/zones/overpass.test.js`):
+   - Added new test block "buildQuery terrain-feature and path tags" after line 137
+   - Test verifies that the query contains: `leisure"~"golf_course|park'`, `landuse"~"cemetery'`, `natural"~"wood'`, and `highway"~"path|footway'`
 
-3. **Commit**: Committed just the `firestore.rules` change.
-   - Commit: `5eb28b1` — "feat: firestore rule for zoneRequests collection"
-   - The `.superpowers/sdd/task-1-brief.md` and `task-1-report.md` workspace files were deliberately excluded from the commit (scratch/workspace files, not part of the codebase).
+2. **Implementation** (`command-center/src/zones/overpass.js`):
+   - Extended `buildQuery` function (lines 76-93) with four new `way[...]` clauses:
+     - `way["leisure"~"golf_course|park"]`
+     - `way["landuse"~"cemetery"]`
+     - `way["natural"~"wood"]`
+     - `way["highway"~"path|footway"]`
+   - Added detailed comment explaining the rationale (terrain features needed for zone splitting algorithm to avoid blind grid splits, path/footway for feature internal paths)
 
-## What Was NOT Completed (Deferred, Not a Failure)
+3. **Cache Prep Script** (`tools/prefetch-streets.mjs`):
+   - Updated `query` function (lines 61-73) with the same four terrain feature and path clauses
+   - Added comment noting sync requirement with buildQuery
+   - Uses hardcoded full detail level (motorway|trunk|primary|secondary|tertiary|residential|living_street|unclassified) as explained in brief
 
-**Firebase Deploy**: `firebase deploy --only firestore:rules` was not run in this task.
+## TDD Evidence
 
-Per the controller's decision, this step is **deferred** — it will be bundled with other deploys and run later, right before the plan's final Task 15 smoke test. This is an intentional sequencing decision by the user, not a blocker or failure of this task:
+### RED (Failing Test)
+Command: `npx vitest run test/zones/overpass.test.js -t "terrain-feature"`
 
-- Firebase CLI is not authenticated on this machine and requires an interactive browser login.
-- The user will perform `firebase login` themselves later, on their own machine/schedule.
-- The rule change is verified correct and is committed to the repo, ready to deploy whenever the bundled deploy happens.
+Output shows:
+```
+FAIL test/zones/overpass.test.js > buildQuery terrain-feature and path tags > 
+always requests golf/park/cemetery/wood polygons and path/footway ways, regardless of detail
+AssertionError: expected '[out:json][timeout:25];\n(\n  way["hi…' to contain 'leisure"~"golf_course|park'
+```
+Test correctly failed because the query string did not yet contain the terrain features.
 
-## Concern for Downstream Tasks
+### GREEN (Passing Test)
+Command: `npx vitest run test/zones/overpass.test.js -t "terrain-feature"`
 
-The `zoneRequests` Firestore rule exists in code and is committed, but is **not yet live** in the Firebase project (`sar-trackhatzolah`). Any task that depends on this rule being enforced in production/staging Firestore should account for the fact that deployment is still pending until the bundled deploy before Task 15's smoke test.
+Output shows:
+```
+✓ test/zones/overpass.test.js (24 tests | 23 skipped)
+Test Files: 1 passed (1)
+Tests: 1 passed | 23 skipped (24)
+```
+Test passes after implementation.
 
-## Files Modified
+## Verification
 
-- `firestore.rules`: Modified, verified correct, and committed (`5eb28b1`). Deploy deferred per user decision.
+Full test suite run after implementation:
+```
+npx vitest run
+✓ test/home/sortSearches.test.js (6 tests)
+✓ test/search/boundaries.test.js (3 tests)
+✓ test/search/searchCode.test.js (4 tests)
+✓ test/zones/grid.test.js (4 tests)
+✓ test/zones/overpass.test.js (24 tests) ← includes new test
+✓ test/zones/subdivider.test.js (49 tests)
 
-## Self-Review
+Test Files: 6 passed (6)
+Tests: 90 passed (90)
+```
+All tests pass with no regressions.
 
-The file edit is correct and complete:
-- Rule syntax is valid Firestore rules v2
-- Placement matches brief specification exactly
-- Comments are included as specified
-- File structure is preserved and correct
+## Files Changed
 
-The only remaining step — deploying to Firebase — is intentionally deferred by the controller's decision, to be bundled with other deploys ahead of the final smoke test.
+- `command-center/src/zones/overpass.js` (buildQuery function)
+- `command-center/test/zones/overpass.test.js` (new test block)
+- `tools/prefetch-streets.mjs` (query function)
+
+## Commit
+
+```
+dbd21c3 feat(cc): fetch terrain features and paths for zone splitting
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+```
+
+## Self-Review Findings
+
+✓ All requirements from task-1-brief.md implemented exactly as specified
+✓ Query strings are byte-for-byte consistent between overpass.js and prefetch-streets.mjs (with documented detail-level difference)
+✓ Test output is pristine (no stray warnings, all 90 tests pass)
+✓ Only modified the three files specified in brief
+✓ TDD steps followed in order: RED → GREEN → full suite pass → commit
+✓ Comments added explain rationale per spec (2026-07-19 zone-algorithm-quality issue #1)
+
+No issues or concerns identified. Implementation complete and ready for downstream tasks.
