@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped }, ref) {
+export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped }, ref) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -97,6 +97,18 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
       map.addSource('searcher-positions', { type: 'geojson', data: turf.featureCollection([]) });
       map.addLayer({ id: 'searcher-positions-dot', type: 'circle', source: 'searcher-positions',
         paint: { 'circle-radius': 7, 'circle-color': '#16a34a', 'circle-stroke-width': 3, 'circle-stroke-color': '#fff' } });
+      // Command needs to know WHO is where without cross-referencing the panel:
+      // the dot alone can't answer "who is in zone 14?" during a live search.
+      map.addLayer({ id: 'searcher-positions-labels', type: 'symbol', source: 'searcher-positions',
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-size': 12,
+          'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Regular'],
+          'text-anchor': 'top',
+          'text-offset': [0, 0.7],
+          'text-allow-overlap': false,
+        },
+        paint: { 'text-color': '#14532d', 'text-halo-color': '#ffffff', 'text-halo-width': 2 } });
 
       map.addSource('live-markers', { type: 'geojson', data: turf.featureCollection([]) });
       map.addLayer({ id: 'live-markers-dot', type: 'circle', source: 'live-markers',
@@ -239,10 +251,12 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
       .filter(t => t.points?.length >= 1 && t.zoneStatus !== 'searched')
       .map(t => turf.point(
         [t.points[t.points.length - 1].lng, t.points[t.points.length - 1].lat],
-        { volunteerId: t.volunteerId }
+        // An unregistered id would render as a UUID next to the dot — worse
+        // than nothing, so those stay unlabelled.
+        { volunteerId: t.volunteerId, label: volunteers[t.volunteerId] ?? '' }
       ));
     map.getSource('searcher-positions')?.setData(turf.featureCollection(positions));
-  }, [tracks, mapLoaded]);
+  }, [tracks, volunteers, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;

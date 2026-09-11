@@ -389,6 +389,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           zones={zones}
           tracks={tracksWithStatus}
           liveMarkers={liveMarkers}
+          volunteers={volunteers}
           selectedZoneId={selectedZoneId}
           onZoneClick={handleZoneClickById}
           zoneEditId={zoneEditId}
