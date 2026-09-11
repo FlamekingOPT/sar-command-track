@@ -1,0 +1,87 @@
+# Zone Generation Algorithm Quality — Design
+
+**Date:** 2026-07-19
+**Status:** Approved (Jack, 2026-07-19).
+
+## Problem
+
+Field review of a live 37-zone WeHo/Beverly Hills/Koreatown search (2026-07-16) surfaced five algorithm-quality issues, all traced to `subdivider.js`/`overpass.js`:
+
+1. A golf course is invisible to the algorithm (only `highway`+`waterway` ways are fetched), so when the block containing it needs local refinement, it falls back to a straight rectangular grid that cuts across the course.
+2. Region growth (`mergeBlocksToZones`) is greedy BFS toward a weight target with zero shape objective, producing elongated/notched zones as a side effect.
+3. A hard-road-isolated compartment floors at 1 zone (`allocateZoneCounts`'s `max(1, ...)`) even when tiny, and today's runt absorption only reaches across a hard road as an all-or-nothing "last resort," not a judged tradeoff.
+4. `mergeBlocksToZones`'s final sweep leaves a graph-isolated tiny zone standing rather than risk erasing real area (the 2026-07-16 park-erasure fix's deliberate tradeoff) — but some of these could still be merged into a better-fitting neighbor if the merge were actually evaluated rather than skipped for lack of a shared edge.
+5. A zone border landed on an arbitrary residential street one block off of Vermont Ave, when using Vermont as the split point would have produced a more even division. Not a "snap to named roads" preference — the actual complaint is that greedy growth locked in a worse split than was available, and nothing re-checks after the fact.
+
+Jack wants this addressed with AI-assisted **design** (this document) producing better deterministic heuristics — not an LLM call at zone-generation time. The design should leave room to bolt on an LLM critique/adjustment step later without a rewrite (e.g. as an optional pass after today's output), but that is out of scope to build now.
+
+## Key insight
+
+Issues #2, #3, #4, and #5 are one problem, not four: **once greedy growth glues blocks into a zone, that decision is final.** Nothing ever revisits a border after the fact, even when a neighboring zone, a rounder shape, or a more sensible road would clearly have been better. The fix is a single new mechanism — a scored boundary-refinement pass that runs after today's greedy growth and re-evaluates every zone border — rather than four separate patches.
+
+Issue #1 (feature-blindness) is a separate, independent fix to what the algorithm can *see* before it splits anything.
+
+## Design
+
+### Part A — Feature-aware fetching (issue #1)
+
+Add way queries for `leisure=golf_course|park`, `landuse=cemetery`, and `natural=wood` to both `overpass.js`'s live query and `tools/prefetch-streets.mjs`'s cache-prep query — they must stay in sync (existing tile-scheme requirement). These tags return polygons, not lines; also add `highway=path|footway` (currently excluded from every `DETAIL_LEVELS` tier) so paths inside these features are available for splitting.
+
+`buildBlocks`'s existing local-refinement branch (`targetZoneCount > 0`, the one that already recurses into `buildBlocks` with local street data when a block's effort exceeds its zone share) is extended: when the oversized block overlaps one of these feature polygons, the feature's own boundary ring, plus any internal path/footway ways inside it, are added as edges to that local `polygonize` call. A golf course now splits along its actual shape and cart paths instead of a straight grid line. `gridZones` remains the fallback only when the feature has no internal paths to work with.
+
+Per Jack: the feature does **not** need to stay whole or avoid being split — being included in one zone or split across several is fine. The only requirement is that the resulting shape/border be sensible, which Part B's refinement pass enforces regardless of how the initial split happened.
+
+**Scope limit:** only simple closed-way polygons (the common OSM representation for these tags). Multipolygon relations (rare for golf/park/cemetery, used for shapes with holes) are skipped with a console warning — not a blocker for this iteration.
+
+### Part B — Scored boundary-refinement pass (issues #2, #3, #4, #5)
+
+New function, e.g. `refineZoneBoundaries(regions, blocks, adjacency, weights)`, runs after `mergeBlocksToZones`'s existing growth + runt-absorption produces its initial regions, and before the final multi-part/sliver geometric sweep. It requires block-level adjacency and per-block weights, so it's skipped entirely for grid-fallback boundaries (no street/adjacency data) and for the trivial 1-zone case, matching the existing `polys.length <= 1` guard pattern elsewhere in this file.
+
+**Mechanism:** for every pair of zones sharing a block-level adjacency edge, consider moving each of zone A's blocks that borders zone B over to zone B (and vice versa). Score each candidate move as a weighted sum of:
+
+- **Weight balance** — does the move bring both zones' effort closer to the fair-share target used during growth? (reuses the same `weights`/effort values already computed by `computeBlockEfforts`)
+- **Compactness** — isoperimetric quotient `4π·Area/Perimeter²` (1.0 = circle, lower = elongated/notched) computed for both zones before and after the move; the move should raise the average, not lower it.
+- **Boundary quality** — the road class nearest the resulting shared border, scored by class (secondary/tertiary tiers score higher than residential/unclassified/no-road-at-all). This reuses `sharedAdjacency`'s existing midpoint-to-line-distance technique, extended to report the nearest road's class rather than just hard/soft.
+- **Hard-road-crossing penalty** — a large fixed penalty applied only when the move's justifying adjacency edge is `hard` (motorway/trunk/primary/waterway). This replaces today's binary "never, except as last resort" rule with a continuous tradeoff: a marginal move loses to the penalty, but a move that rescues an isolated floor-locked compartment (issue #3) or merges a standing sliver into a much-better-fitting neighbor (issue #4) can still win if the combined weight-balance and compactness gain is large enough.
+
+A move is applied only if its combined score is clearly positive (threshold constant, tunable — same philosophy as this file's existing `RUNT_FRACTION`/`RUNT_AREA_FRACTION` knobs). After a move, the pass re-scores the borders it touched and continues; it terminates when a full pass over all zone-pair borders finds no more improving move, or when a hard cap on total moves is reached (bounded as a multiple of block count) — a hard cap independent of convergence behavior, so this cannot reproduce the class of hang the 2026-07-16 park-erasure fix hit in `mergeBlocksToZones`.
+
+**Safety constraints on every candidate move**, mirroring this file's existing defensive style:
+- The move must not disconnect either zone's remaining blocks (verified by a BFS reachability check over the losing zone's blocks before committing — cheap relative to the geometry operations already done per move).
+- The move must not reduce either zone to zero blocks.
+- Polygon reconstruction after moves reuses `safeUnion`; a move whose resulting geometry can't be safely unioned is discarded, not forced.
+
+**Data flow change required:** `mergeBlocksToZones` currently discards which blocks belong to which zone once it builds final polygons (`polys = regions.filter(...).map(...)`). It needs to expose the region→block-indices mapping (or run refinement before that flattening step) so Part B can operate on block membership directly rather than re-deriving it from geometry.
+
+## Field validation (2026-07-20, real "150"-zone West LA search, `Bind: Z5CJ`)
+
+Jack generated a real 143-zone search spanning Hollywood to Venice and spotted zone 95 looking wrong. Rather than eyeball it, we pulled the actual zone GeoJSON out of the running Command Center (via the Mapbox source data) and checked it geometrically against the cached street tiles. Confirms this design is targeting real, currently-occurring problems, not hypothetical ones:
+
+- **Zone 95 genuinely crosses the San Diego Freeway (405)** — multiple full segments of the freeway (tagged `motorway`, a `HARD_HIGHWAYS` entry) sit entirely inside its polygon, not just at the boundary. Root cause: the "last resort" rule in `mergeBlocksToZones` (a hard-road-isolated runt with no soft neighbor may absorb across a hard edge) fired for a real, walkable pocket of streets — not a negligible median artifact, which is what that rule was written for. The result is a zone a searcher can't complete without crossing an active freeway on foot. This is exactly the issue #3 scenario, but demonstrates the current binary "last resort" rule is too permissive — Part B's continuous hard-road-crossing penalty (weighed against actual weight-balance gain) is meant to replace this, and needs to come out clearly negative for a case like this.
+- **Zone 86: compactness 0.039** (worst in the search) — 14km of perimeter enclosing only 0.6km², i.e. a wildly notched/jagged shape, not merely elongated. The most extreme real-world confirmation yet of issue #2 (zero shape objective in growth).
+- **Zone 2: 0.009 km²** (9,300 m², aspect ratio 5.2 — roughly a 500m×20m sliver) — a real standing-sliver instance, issue #4.
+- Other zones scoring under 0.25 compactness in this one search: 89, 27, 29, 87, 92, 88, 105, 85, 75, 13, 116, 36, 66 — issue #2 is not a rare edge case at this boundary size, it's common.
+- **Barry Avenue is fragmented across 4 different zones** (93, 95, 125, 137) along its length, rather than following one sensible line (e.g. "everything west of Barry") — a direct symptom of growth drawing arbitrary internal seams with no boundary-quality signal, same mechanism as the Vermont Ave case issue #5 describes.
+
+**New, separate finding — zone numbering doesn't hold up at this boundary's scale/shape.** `orderZonesForNumbering` bands zones into `sqrt(n)` latitude rows and snakes W↔E per row; this was validated on compact single-neighborhood boundaries (WeHo/Beverly Hills, ~158 zones) but breaks down on a large, irregularly-shaped, multi-neighborhood span like this one (Hollywood to Venice, ~15km). Measured directly: average number gap between a zone and its nearest geographic neighbor is **10.1** (out of 143 zones); worst cases pair zones ~500-800m apart with numbers **27-38 apart** (e.g. zone 88 next to zone 50, zone 92 next to zone 129). This is a distinct, undesigned issue in `orderZonesForNumbering`, not part of this spec's scope (`buildBlocks`/`mergeBlocksToZones`) — logged separately in the handoff backlog for its own brainstorming pass.
+
+## Testing
+
+Extend `subdivider.test.js`/`overpass.test.js` with:
+- A synthetic golf-course-shaped feature inside an oversized block, asserting the split follows the feature's boundary/paths rather than a grid.
+- A synthetic case mirroring the Vermont Ave scenario (two adjacent zones, an available named-road split that's more even than the current one), asserting refinement moves the border to it.
+- A synthetic hard-road-isolated single-block compartment next to a much larger soft-connected zone, asserting refinement merges it when the weight-balance gain clearly outweighs the hard-road penalty, and does NOT merge it when the isolated compartment is legitimately zone-worthy on its own.
+- A regression re-run against the real boundaries already used to validate prior fixes — the WeHo/Beverly Hills/Koreatown case (golf course + Vermont Ave) and the dense Westlake case (~174 zones, the one that previously hung in `mergeBlocksToZones`) — confirming no crash, no hang, and a bounded move count.
+
+## Tunable constants (new, alongside this file's existing knobs)
+
+- Composite score weights for weight-balance / compactness / boundary-quality (default equal weighting, field-tuned like everything else in `subdivider.js`).
+- Hard-road-crossing penalty magnitude.
+- Move-acceptance threshold (minimum positive score to apply a move).
+- Max total moves cap (multiple of block count).
+
+## Out of scope
+
+- Any LLM call at zone-generation time. This design produces better deterministic heuristics only; an optional LLM critique/adjustment pass on top of this output is a future addition, not built here.
+- OSM multipolygon relations for golf/park/cemetery/wood features (way-only for now).
+- Standing-sliver **manual override** UI (Command Center affordance to hand-fix a zone) — that's the separate "manual zone editing" backlog item from the 2026-07-16 handoff review; this design only improves the algorithm's own judgment, not command's ability to override it.

@@ -144,7 +144,33 @@ function buildEdgeSet(boundary, hardLines, softLines) {
   return { edges, bbox };
 }
 
-function sharedAdjacency(polyA, polyB, hardLines) {
+const BOUNDARY_ROAD_MATCH_TOLERANCE_M = 15;
+// Boundary-quality scoring (2026-07-19 spec, Part B): a shared border that
+// lands on a real, sizeable road reads better to command than one that cuts
+// through the middle of an ordinary block. secondary/tertiary score highest;
+// residential/living_street/unclassified score low; no nearby road scores 0.
+// Hard classes aren't listed here — a hard-adjacent border is scored by the
+// separate hard-road-crossing penalty in refineZoneBoundaries (Task 6), not
+// this table.
+export const ROAD_CLASS_QUALITY = {
+  secondary: 1.0,
+  tertiary: 0.7,
+  residential: 0.3,
+  living_street: 0.3,
+  unclassified: 0.2,
+};
+
+function nearestRoadClass(point, lines) {
+  let best = null, bestD = Infinity;
+  for (const line of lines) {
+    let d;
+    try { d = turf.pointToLineDistance(point, line, { units: 'meters' }); } catch { continue; }
+    if (d < bestD) { bestD = d; best = line.properties?.highway ?? null; }
+  }
+  return bestD <= BOUNDARY_ROAD_MATCH_TOLERANCE_M ? best : null;
+}
+
+function sharedAdjacency(polyA, polyB, hardLines, softLines = []) {
   let overlap;
   try {
     overlap = turf.lineOverlap(turf.polygonToLine(polyA), turf.polygonToLine(polyB), { tolerance: 0.003 });
@@ -165,7 +191,140 @@ function sharedAdjacency(polyA, polyB, hardLines) {
   for (const h of hardLines) {
     try { minD = Math.min(minD, turf.pointToLineDistance(mid, h, { units: 'meters' })); } catch {}
   }
-  return { hard: minD < HARD_BARRIER_TOLERANCE_M };
+  const hard = minD < HARD_BARRIER_TOLERANCE_M;
+  return { hard, roadClass: hard ? null : nearestRoadClass(mid, softLines) };
+}
+
+// Isoperimetric quotient: 1.0 for a circle, lower for elongated/notched
+// shapes. Used by refineZoneBoundaries (2026-07-19 spec, Part B, Task 6) to
+// score whether a candidate move makes a zone's shape rounder or worse.
+export function isoperimetricQuotient(poly) {
+  const area = turf.area(poly);
+  let perimM;
+  try { perimM = turf.length(turf.polygonToLine(poly), { units: 'kilometers' }) * 1000; }
+  catch { return 0; }
+  return perimM > 0 ? (4 * Math.PI * area) / (perimM * perimM) : 0;
+}
+
+// Scored boundary-refinement pass (2026-07-19 spec, Part B). Runs after
+// growth + runt absorption produce `regions`, before they're flattened into
+// final polygons. Unifies four issues that used to be four separate, cruder
+// mechanisms: zero shape objective in growth (#2), the binary "last resort"
+// hard-road absorption rule (#3), standing slivers with no graph-reachable
+// neighbor (#4), and a greedy split that can't undo an early bad choice, e.g.
+// landing one block off of a better arterial (#5, the Vermont Ave case).
+//
+// Field-confirmed need (2026-07-20): a real 143-zone search produced a zone
+// that genuinely crosses the San Diego Freeway via the OLD rule's binary
+// "absorb across a hard road as last resort" — a real, walkable pocket of
+// streets got folded across an active freeway because it had no soft
+// neighbor, without ever weighing whether that was actually a good idea.
+const WEIGHT_BALANCE_SCORE_WEIGHT = 1;
+const COMPACTNESS_SCORE_WEIGHT = 1;
+const BOUNDARY_QUALITY_SCORE_WEIGHT = 1;
+const HARD_ROAD_CROSSING_PENALTY = 3;
+const MOVE_ACCEPTANCE_THRESHOLD = 0.05;
+const MAX_MOVES_PER_BLOCK = 4;
+
+function isConnected(blockIndices, allNeighbors) {
+  if (blockIndices.length <= 1) return true;
+  const set = new Set(blockIndices);
+  const seen = new Set([blockIndices[0]]);
+  const queue = [blockIndices[0]];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const nb of allNeighbors[cur] ?? []) {
+      if (set.has(nb) && !seen.has(nb)) { seen.add(nb); queue.push(nb); }
+    }
+  }
+  return seen.size === blockIndices.length;
+}
+
+export function refineZoneBoundaries(regions, blocks, adjacency, weights) {
+  const live = regions.filter(r => !r.dead);
+  if (live.length < 2) return;
+
+  const allNeighbors = blocks.map(() => []);
+  for (const e of adjacency) { allNeighbors[e.a].push(e.b); allNeighbors[e.b].push(e.a); }
+
+  const regionOf = new Array(blocks.length);
+  live.forEach(r => r.blocks.forEach(b => { regionOf[b] = r; }));
+
+  const totalWeight = weights.reduce((s, w) => s + w, 0);
+  const maxMoves = blocks.length * MAX_MOVES_PER_BLOCK;
+  let moves = 0;
+  let improved = true;
+  while (improved && moves < maxMoves) {
+    improved = false;
+    for (const e of adjacency) {
+      const ra = regionOf[e.a], rb = regionOf[e.b];
+      if (!ra || !rb || ra === rb || ra.dead || rb.dead) continue;
+
+      for (const [moving, from, to] of [[e.a, ra, rb], [e.b, rb, ra]]) {
+        // One of these two directions can dissolve `from` into `to` (see
+        // below) before the *other* direction of this same edge is
+        // evaluated — the outer ra.dead/rb.dead check above only runs once
+        // per edge, before either direction executes. Without this re-check,
+        // the second direction could still merge blocks INTO the just-killed
+        // region: `to.blocks` would gain blocks/weight while `to.dead`
+        // stayed true, and every block routed there would be silently
+        // dropped by `regions.filter(r => !r.dead)` downstream, with no
+        // adjacency edge ever able to reach it again (its region is dead, so
+        // every edge touching it is skipped by the check above from then on).
+        if (from.dead || to.dead) continue;
+
+        const remaining = from.blocks.filter(b => b !== moving);
+        if (remaining.length > 0 && !isConnected(remaining, allNeighbors)) continue;
+
+        // Fair share is recomputed against how many LIVE regions would exist
+        // after this move — a move that fully dissolves `from` (remaining
+        // empty) reduces the effective zone count by one, same as the
+        // existing runt-absorption logic already does elsewhere in this file.
+        const liveCountBefore = regions.filter(r => !r.dead).length;
+        const liveCountAfter = remaining.length > 0 ? liveCountBefore : liveCountBefore - 1;
+        const fairShareBefore = totalWeight / liveCountBefore;
+        const fairShareAfter = totalWeight / Math.max(1, liveCountAfter);
+
+        const blockWeight = weights[moving];
+        const weightDelta =
+          (Math.abs(from.weight - fairShareBefore) + Math.abs(to.weight - fairShareBefore)) -
+          ((remaining.length > 0 ? Math.abs(from.weight - blockWeight - fairShareAfter) : 0) +
+            Math.abs(to.weight + blockWeight - fairShareAfter));
+
+        let compactDelta;
+        try {
+          const fromPolyBefore = from.blocks.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[from.blocks[0]]);
+          const toPolyBefore = to.blocks.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[to.blocks[0]]);
+          const toPolyAfter = [...to.blocks, moving].slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[to.blocks[0]]);
+          const compactBefore = isoperimetricQuotient(fromPolyBefore) + isoperimetricQuotient(toPolyBefore);
+          const compactAfter = remaining.length > 0
+            ? isoperimetricQuotient(remaining.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[remaining[0]])) + isoperimetricQuotient(toPolyAfter)
+            : isoperimetricQuotient(toPolyAfter);
+          compactDelta = (compactAfter - compactBefore) / 2;
+        } catch { continue; }
+
+        const boundaryQuality = e.hard ? 0 : (ROAD_CLASS_QUALITY[e.roadClass] ?? 0);
+        const hardPenalty = e.hard ? HARD_ROAD_CROSSING_PENALTY : 0;
+
+        const score =
+          WEIGHT_BALANCE_SCORE_WEIGHT * weightDelta +
+          COMPACTNESS_SCORE_WEIGHT * compactDelta +
+          BOUNDARY_QUALITY_SCORE_WEIGHT * boundaryQuality -
+          hardPenalty;
+
+        if (score > MOVE_ACCEPTANCE_THRESHOLD) {
+          from.blocks = remaining;
+          from.weight -= blockWeight;
+          to.blocks = [...to.blocks, moving];
+          to.weight += blockWeight;
+          regionOf[moving] = to;
+          if (remaining.length === 0) from.dead = true;
+          moves++;
+          improved = true;
+        }
+      }
+    }
+  }
 }
 
 // maxBlockAreaM2 rejects polygonize artifacts (faces leaking past real
@@ -288,6 +447,8 @@ export function buildBlocks(boundary, hardLines, softLines, {
   refineStreets = null,
   targetZoneCount = 0,
   skipAdjacency = false,
+  terrainPolygons = [],
+  terrainPaths = [],
 } = {}) {
   const { edges, bbox } = buildEdgeSet(boundary, hardLines, softLines);
   const paddedBoundary = turf.bboxPolygon(bbox);
@@ -327,10 +488,32 @@ export function buildBlocks(boundary, hardLines, softLines, {
     const efforts = computeBlockEfforts(blocks, streets);
     const targetEffort = (efforts.reduce((s, e) => s + e, 0) / targetZoneCount) * REFINE_EFFORT_FACTOR;
     const lineBboxes = streets.map(l => turf.bbox(l));
+    const terrainBboxes = terrainPolygons.map(t => turf.bbox(t));
+    const pathBboxes = terrainPaths.map(p => turf.bbox(p));
     blocks = blocks.flatMap((b, i) => {
       if (efforts[i] <= targetEffort) return [b];
       const bb = turf.bbox(b);
       const local = streets.filter((l, li) => bboxesTouch(lineBboxes[li], bb));
+
+      // A terrain feature (golf/park/cemetery/wood) overlapping this block
+      // has a real shape to split along — try it before falling back to a
+      // blind grid (2026-07-19 spec, issue #1: a golf course was cut straight
+      // through by gridZones because it was invisible to the algorithm).
+      const overlappingTerrain = terrainPolygons.filter((t, ti) => {
+        if (!bboxesTouch(terrainBboxes[ti], bb)) return false;
+        try { return turf.booleanIntersects(t, b); } catch { return false; }
+      });
+      if (overlappingTerrain.length) {
+        const terrainEdges = overlappingTerrain.flatMap(t => {
+          try { return [turf.polygonToLine(t)]; } catch { return []; }
+        });
+        const localPaths = terrainPaths.filter((p, pi) => bboxesTouch(pathBboxes[pi], bb));
+        try {
+          const terrainSplit = buildBlocks(b, [], [...local, ...terrainEdges, ...localPaths], { maxBlockAreaM2, skipAdjacency: true });
+          if (terrainSplit.blocks.length > 1) return terrainSplit.blocks;
+        } catch { /* fall through to the plain-street / grid attempts below */ }
+      }
+
       let sub = null;
       try { sub = buildBlocks(b, [], local, { maxBlockAreaM2, skipAdjacency: true }); } catch { /* fall through to grid */ }
       if (sub?.blocks.length > 1) return sub.blocks;
@@ -346,8 +529,8 @@ export function buildBlocks(boundary, hardLines, softLines, {
   if (!skipAdjacency) {
     for (let i = 0; i < blocks.length; i++) {
       for (let j = i + 1; j < blocks.length; j++) {
-        const adj = sharedAdjacency(blocks[i], blocks[j], hardLines);
-        if (adj) adjacency.push({ a: i, b: j, hard: adj.hard });
+        const adj = sharedAdjacency(blocks[i], blocks[j], hardLines, softLines);
+        if (adj) adjacency.push({ a: i, b: j, hard: adj.hard, roadClass: adj.roadClass });
       }
     }
   }

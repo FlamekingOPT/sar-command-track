@@ -58,10 +58,17 @@ function tiles([west, south, east, north]) {
   return out;
 }
 
+// Keep in sync with command-center/src/zones/overpass.js's buildQuery — the
+// cache tile scheme requires identical tag coverage (2026-07-19 zone-
+// algorithm-quality spec, issue #1: terrain features + internal paths).
 const query = ([west, south, east, north]) => `[out:json][timeout:60];
 (
   way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|living_street|unclassified"](${south},${west},${north},${east});
   way["waterway"~"river|canal|stream"](${south},${west},${north},${east});
+  way["leisure"~"golf_course|park"](${south},${west},${north},${east});
+  way["landuse"~"cemetery"](${south},${west},${north},${east});
+  way["natural"~"wood"](${south},${west},${north},${east});
+  way["highway"~"path|footway"](${south},${west},${north},${east});
 );
 out geom;`;
 

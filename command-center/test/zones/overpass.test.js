@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as turf from '@turf/turf';
-import { fetchStreetGraph, fetchStreets, selectDetail, DETAIL_LEVELS, tileBboxes, cacheTileKeys, filterByDetail, MAX_FETCH_AREA_M2, TILE_SIZE_DEG, STREET_TILE_BASE } from '../../src/zones/overpass.js';
+import { fetchStreetGraph, fetchStreets, selectDetail, DETAIL_LEVELS, tileBboxes, cacheTileKeys, filterByDetail, MAX_FETCH_AREA_M2, TILE_SIZE_DEG, STREET_TILE_BASE, classifyTerrainFeatures } from '../../src/zones/overpass.js';
 
 describe('fetchStreetGraph', () => {
   const boundary = turf.polygon([[
@@ -37,7 +37,7 @@ describe('fetchStreetGraph', () => {
   it('classifies motorway/trunk/primary and waterways as hard, everything else fetched as soft', async () => {
     const { hardLines, softLines } = await fetchStreetGraph(boundary);
     expect(hardLines).toHaveLength(2); // primary + river
-    expect(softLines).toHaveLength(3); // residential + tertiary + footway (see note below)
+    expect(softLines).toHaveLength(2); // residential + tertiary (footway classified to terrainPaths instead)
   });
 
   it('queries Overpass with a padded bbox and both barrier tiers', async () => {
@@ -54,7 +54,7 @@ describe('fetchStreetGraph', () => {
 
     const { hardLines, softLines } = await fetchStreetGraph(boundary);
     expect(hardLines).toHaveLength(2);
-    expect(softLines).toHaveLength(3);
+    expect(softLines).toHaveLength(2);
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
@@ -81,7 +81,7 @@ describe('fetchStreetGraph', () => {
       const { hardLines, softLines } = await resultPromise;
 
       expect(hardLines).toHaveLength(2);
-      expect(softLines).toHaveLength(3);
+      expect(softLines).toHaveLength(2);
       expect(global.fetch).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
@@ -133,6 +133,106 @@ describe('fetchStreetGraph level of detail', () => {
     expect(options.body).toContain('motorway|trunk|primary|secondary');
     expect(options.body).not.toContain('tertiary');
     expect(options.body).toContain('river|canal|stream');
+  });
+});
+
+describe('buildQuery terrain-feature and path tags', () => {
+  const boundary = turf.polygon([[
+    [-118.30, 34.00], [-118.29, 34.00], [-118.29, 34.01], [-118.30, 34.01], [-118.30, 34.00],
+  ]]);
+
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ elements: [] }) });
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('always requests golf/park/cemetery/wood polygons and path/footway ways, regardless of detail', async () => {
+    await fetchStreetGraph(boundary, { detail: 'city' });
+    const [, options] = global.fetch.mock.calls[0];
+    expect(options.body).toContain('leisure"~"golf_course|park');
+    expect(options.body).toContain('landuse"~"cemetery');
+    expect(options.body).toContain('natural"~"wood');
+    expect(options.body).toContain('highway"~"path|footway');
+  });
+});
+
+describe('classifyWays road class tagging and terrain filtering', () => {
+  const boundary = turf.polygon([[
+    [-118.30, 34.00], [-118.29, 34.00], [-118.29, 34.01], [-118.30, 34.01], [-118.30, 34.00],
+  ]]);
+  beforeEach(() => {
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        elements: [
+          { type: 'way', tags: { highway: 'primary', name: 'Main St' }, geometry: [{ lat: 34.005, lon: -118.295 }, { lat: 34.006, lon: -118.294 }] },
+          { type: 'way', tags: { highway: 'residential', name: 'Elm St' }, geometry: [{ lat: 34.003, lon: -118.297 }, { lat: 34.004, lon: -118.296 }] },
+          { type: 'way', tags: { waterway: 'river' }, geometry: [{ lat: 34.001, lon: -118.298 }, { lat: 34.002, lon: -118.299 }] },
+          { type: 'way', tags: { highway: 'footway' }, geometry: [{ lat: 34.009, lon: -118.291 }, { lat: 34.010, lon: -118.290 }] },
+        ],
+      }),
+    });
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('tags each classified line with its road class (or "waterway")', async () => {
+    const { hardLines, softLines } = await fetchStreetGraph(boundary);
+    const primary = hardLines.find(l => l.properties.name === 'Main St');
+    expect(primary.properties.highway).toBe('primary');
+    const river = hardLines.find(l => l.properties.name === undefined || l.properties.name === '');
+    expect(river.properties.highway).toBe('waterway');
+    const residential = softLines.find(l => l.properties.name === 'Elm St');
+    expect(residential.properties.highway).toBe('residential');
+  });
+
+  it('does not classify a bare footway as a street line', async () => {
+    const { hardLines, softLines } = await fetchStreetGraph(boundary);
+    const all = [...hardLines, ...softLines];
+    expect(all.some(l => l.properties.highway === 'footway')).toBe(false);
+  });
+});
+
+describe('classifyTerrainFeatures', () => {
+  const closedRing = [
+    { lat: 34.00, lon: -118.30 }, { lat: 34.00, lon: -118.29 },
+    { lat: 34.01, lon: -118.29 }, { lat: 34.01, lon: -118.30 }, { lat: 34.00, lon: -118.30 },
+  ];
+
+  it('builds a polygon from a closed golf_course/park/cemetery/wood way', () => {
+    const els = [
+      { type: 'way', id: 1, tags: { leisure: 'golf_course' }, geometry: closedRing },
+      { type: 'way', id: 2, tags: { leisure: 'park' }, geometry: closedRing },
+      { type: 'way', id: 3, tags: { landuse: 'cemetery' }, geometry: closedRing },
+      { type: 'way', id: 4, tags: { natural: 'wood' }, geometry: closedRing },
+    ];
+    const { terrainPolygons } = classifyTerrainFeatures(els);
+    expect(terrainPolygons).toHaveLength(4);
+    for (const p of terrainPolygons) expect(p.geometry.type).toBe('Polygon');
+  });
+
+  it('extracts path/footway ways as terrainPaths, not as polygons', () => {
+    const els = [{ type: 'way', id: 5, tags: { highway: 'path' }, geometry: closedRing.slice(0, 2) }];
+    const { terrainPaths, terrainPolygons } = classifyTerrainFeatures(els);
+    expect(terrainPaths).toHaveLength(1);
+    expect(terrainPolygons).toHaveLength(0);
+  });
+
+  it('skips a non-closed terrain way (relation-based multipolygon) with a warning, does not throw', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const openRing = closedRing.slice(0, 4); // deliberately not closed
+    const els = [{ type: 'way', id: 6, tags: { leisure: 'park' }, geometry: openRing }];
+    expect(() => classifyTerrainFeatures(els)).not.toThrow();
+    const { terrainPolygons } = classifyTerrainFeatures(els);
+    expect(terrainPolygons).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('ignores a way with no terrain or path tag entirely', () => {
+    const els = [{ type: 'way', id: 7, tags: { amenity: 'hospital' }, geometry: closedRing }];
+    const { terrainPolygons, terrainPaths } = classifyTerrainFeatures(els);
+    expect(terrainPolygons).toHaveLength(0);
+    expect(terrainPaths).toHaveLength(0);
   });
 });
 

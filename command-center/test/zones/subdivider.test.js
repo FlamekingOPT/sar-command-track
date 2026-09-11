@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2 } from '../../src/zones/subdivider.js';
+import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2, isoperimetricQuotient, refineZoneBoundaries } from '../../src/zones/subdivider.js';
 
 describe('allocateZoneCounts', () => {
   it('splits proportionally by block count and sums exactly to the total', () => {
@@ -146,6 +146,46 @@ describe('buildBlocks', () => {
     expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
   });
 
+  it('splits an oversized block along a golf-course feature instead of a blind grid', () => {
+    // A golf-course polygon fills the right half of an oversized, streetless
+    // block. With no internal streets to refine with, the old behavior fell
+    // back to gridZones — a straight rectangular cut with no regard for the
+    // feature's shape (field bug 2026-07-16, 2026-07-19 spec issue #1).
+    // Passing the feature's own ring as a local edge must make the split
+    // follow it instead.
+    const BIG = turf.polygon([[[0, 0], [0.02, 0], [0.02, 0.02], [0, 0.02], [0, 0]]]); // ~2.2km square, no streets
+    const golfCourse = turf.polygon([[[0.01, 0], [0.02, 0], [0.02, 0.02], [0.01, 0.02], [0.01, 0]]]); // right half
+    const { blocks } = buildBlocks(BIG, [], [], {
+      maxBlockAreaM2: turf.area(BIG) * 2,
+      refineStreets: [],
+      targetZoneCount: 2,
+      terrainPolygons: [golfCourse],
+    });
+    expect(blocks.length).toBeGreaterThan(1);
+    const matchesGolfCourse = blocks.some(b => {
+      let inter;
+      try { inter = turf.intersect(b, golfCourse); } catch { return false; }
+      return inter && turf.area(inter) / turf.area(golfCourse) > 0.95;
+    });
+    expect(matchesGolfCourse).toBe(true);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
+  });
+
+  it('still falls back to gridZones when the terrain feature covers the whole block and has no internal paths', () => {
+    // A terrain polygon identical to the block itself has no residual area to
+    // form a second block from — its own ring can't split it. Must still fall
+    // back to grid, matching pre-existing behavior.
+    const BIG = turf.polygon([[[0, 0], [0.02, 0], [0.02, 0.02], [0, 0.02], [0, 0]]]);
+    const { blocks } = buildBlocks(BIG, [], [], {
+      maxBlockAreaM2: turf.area(BIG) * 2,
+      refineStreets: [],
+      targetZoneCount: 3,
+      terrainPolygons: [BIG],
+    });
+    expect(blocks.length).toBeGreaterThan(1);
+  });
+
   it('keeps an isolated thin-but-real-area sliver instead of erasing it (real park coverage gap)', () => {
     // Field bug (2026-07-16 screenshot, a Kenneth Hahn / Baldwin Hills-style
     // park): a winding internal path carved off an elongated meadow lobe with
@@ -200,6 +240,112 @@ describe('buildBlocks', () => {
     expect(adjacency[0].hard).toBe(false);
     const zones = mergeBlocksToZones(blocks, adjacency, 1);
     expect(zones).toHaveLength(1);
+  });
+});
+
+describe('isoperimetricQuotient', () => {
+  it('scores a square higher than a thin sliver of similar area', () => {
+    const squarish = turf.polygon([[[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01], [0, 0]]]);
+    const sliver = turf.polygon([[[0, 0], [0.05, 0], [0.05, 0.0005], [0, 0.0005], [0, 0]]]);
+    expect(isoperimetricQuotient(squarish)).toBeGreaterThan(isoperimetricQuotient(sliver));
+    expect(isoperimetricQuotient(squarish)).toBeGreaterThan(0.7);
+  });
+});
+
+describe('refineZoneBoundaries', () => {
+  const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
+
+  it('moves a block across a well-classed road when it improves balance (Vermont Ave scenario)', () => {
+    // 2026-07-19 spec issue #5: "a zone border landed on an arbitrary
+    // residential street one block off of Vermont Ave, when using Vermont as
+    // the split point would have produced a more even division." Region A
+    // starts with 3 blocks (weight 30) vs region B's 1 block (weight 10) — a
+    // better-classed road sits between blocks 1 and 2, which would give a
+    // perfectly even 20/20 split instead.
+    const blocksArr = [SQX(0), SQX(1), SQX(2), SQX(3)];
+    const adjacency = [
+      { a: 0, b: 1, hard: false, roadClass: null },
+      { a: 1, b: 2, hard: false, roadClass: 'tertiary' },
+      { a: 2, b: 3, hard: false, roadClass: null },
+    ];
+    const weights = [10, 10, 10, 10];
+    const regions = [
+      { blocks: [0, 1, 2], weight: 30, areaM2: 3, dead: false },
+      { blocks: [3], weight: 10, areaM2: 1, dead: false },
+    ];
+    refineZoneBoundaries(regions, blocksArr, adjacency, weights);
+    const sorted = regions.map(r => [...r.blocks].sort((a, b) => a - b)).sort((a, b) => a[0] - b[0]);
+    expect(sorted[0]).toEqual([0, 1]);
+    expect(sorted[1]).toEqual([2, 3]);
+  });
+
+  it('rescues a hard-road-isolated compartment into a neighbor when the balance gain clearly outweighs the penalty (issue #3 / the zone-95 field case)', () => {
+    // A single tiny block is walled off by a hard road, with a much larger
+    // region on the other side as its only possible merge target. Confirmed
+    // field bug (2026-07-20): the OLD binary "last resort" rule always merges
+    // in this situation even when the isolated block is real, walkable
+    // territory — producing a zone a searcher can't complete without crossing
+    // an active freeway (zone 95 / San Diego Freeway in a real 143-zone
+    // search). The continuous score must still allow a beneficial rescue like
+    // this one — a 1-block region is far below any reasonable fair share.
+    const blocksArr = [SQX(0), SQX(1), SQX(2)];
+    const adjacency = [{ a: 0, b: 1, hard: true, roadClass: null }, { a: 1, b: 2, hard: false, roadClass: null }];
+    const weights = [10, 40, 40];
+    const regions = [
+      { blocks: [0], weight: 10, areaM2: 1, dead: false },
+      { blocks: [1, 2], weight: 80, areaM2: 2, dead: false },
+    ];
+    refineZoneBoundaries(regions, blocksArr, adjacency, weights);
+    const nonEmpty = regions.filter(r => r.blocks.length);
+    expect(nonEmpty).toHaveLength(1);
+    expect(nonEmpty[0].blocks.sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
+  it('does NOT merge an isolated hard-boxed compartment that is legitimately zone-worthy on its own', () => {
+    // Same hard-road topology, but both sides are already at a comfortable,
+    // roughly-equal size — merging would just make one zone twice the size of
+    // the other for no real balance gain, so the hard-road penalty must win.
+    const blocksArr = [SQX(0), SQX(1)];
+    const adjacency = [{ a: 0, b: 1, hard: true, roadClass: null }];
+    const weights = [40, 40];
+    const regions = [
+      { blocks: [0], weight: 40, areaM2: 1, dead: false },
+      { blocks: [1], weight: 40, areaM2: 1, dead: false },
+    ];
+    refineZoneBoundaries(regions, blocksArr, adjacency, weights);
+    expect(regions[0].blocks).toEqual([0]);
+    expect(regions[1].blocks).toEqual([1]);
+  });
+
+  it('does nothing with fewer than 2 live regions', () => {
+    const blocksArr = [SQX(0)];
+    const regions = [{ blocks: [0], weight: 10, areaM2: 1, dead: false }];
+    expect(() => refineZoneBoundaries(regions, blocksArr, [], [10])).not.toThrow();
+    expect(regions[0].blocks).toEqual([0]);
+  });
+});
+
+describe('sharedAdjacency road class (via buildBlocks adjacency)', () => {
+  it('reports the soft road class nearest a soft-adjacent border', () => {
+    const classedSoft = [
+      turf.lineString([[-0.01, 0.0015], [0.0015, 0.0015]], { highway: 'tertiary' }),
+      turf.lineString([[0.0015, 0.0015], [0.013, 0.0015]], { highway: 'tertiary' }),
+    ];
+    const { adjacency } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, classedSoft);
+    const softEdge = adjacency.find(a => a.hard === false);
+    expect(softEdge.roadClass).toBe('tertiary');
+  });
+
+  it('reports a null road class when the fixture lines carry no highway property', () => {
+    const { adjacency } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, SOFT_HORIZONTAL);
+    const softEdge = adjacency.find(a => a.hard === false);
+    expect(softEdge.roadClass).toBeNull();
+  });
+
+  it('reports a null road class on a hard-adjacent border (scored separately by the hard-road penalty)', () => {
+    const { adjacency } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, SOFT_HORIZONTAL);
+    const hardEdge = adjacency.find(a => a.hard === true);
+    expect(hardEdge.roadClass).toBeNull();
   });
 });
 
