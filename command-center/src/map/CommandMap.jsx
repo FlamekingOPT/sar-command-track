@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import MapboxGeocoder from '@mapbox/mapbox-gl-geocoder';
@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [] }) {
+export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], selectedZoneId = null }, ref) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -72,6 +72,9 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable
           'text-allow-overlap': false,
         },
         paint: { 'text-color': '#374151', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+      map.addLayer({ id: 'zones-selected-line', type: 'line', source: 'zones',
+        filter: ['==', ['get', 'id'], ''],
+        paint: { 'line-color': '#2563eb', 'line-width': 4 } });
 
       map.addSource('tracks', { type: 'geojson', data: turf.featureCollection([]) });
       map.addLayer({ id: 'tracks-line', type: 'line', source: 'tracks',
@@ -115,6 +118,15 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable
     return () => { setMapLoaded(false); map.remove(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useImperativeHandle(ref, () => ({
+    flyToZone(zone) {
+      const map = mapRef.current;
+      if (!map || !zone?.polygon) return;
+      const [minX, minY, maxX, maxY] = turf.bbox(zone.polygon);
+      map.fitBounds([[minX, minY], [maxX, maxY]], { padding: 120, maxZoom: 18, duration: 800 });
+    },
+  }), []);
+
   useEffect(() => {
     const draw = drawRef.current;
     if (!draw) return;
@@ -148,10 +160,16 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable
     map.getSource('zones')?.setData(
       turf.featureCollection(zones.map(z => ({
         type: 'Feature', geometry: z.polygon,
-        properties: { number: z.number, color: STATUS_COLORS[z.status] ?? '#9ca3af' },
+        properties: { id: z.id, number: z.number, color: STATUS_COLORS[z.status] ?? '#9ca3af' },
       })))
     );
   }, [zones, mapLoaded]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded) return;
+    map.setFilter('zones-selected-line', ['==', ['get', 'id'], selectedZoneId ?? '']);
+  }, [selectedZoneId, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -178,4 +196,4 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable
   }, [liveMarkers, mapLoaded]);
 
   return <div ref={containerRef} style={{ flex: 1, height: '100%' }} />;
-}
+});

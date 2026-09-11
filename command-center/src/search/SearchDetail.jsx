@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
@@ -26,6 +26,13 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [liveMarkers, setLiveMarkers] = useState([]);
   const [copiedLink, setCopiedLink] = useState(false);
   const [searchCode, setSearchCode] = useState('');
+  const [selectedZoneId, setSelectedZoneId] = useState(null);
+  const mapRef = useRef(null);
+
+  function handleZoneClick(zone) {
+    setSelectedZoneId(zone.id);
+    mapRef.current?.flyToZone(zone);
+  }
 
   useEffect(() => watchZones(searchId, DAY_ID, setZones), [searchId]);
 
@@ -318,6 +325,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       </div>
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         <CommandMap
+          ref={mapRef}
           drawMode={readOnly ? 'idle' : drawMode}
           onFeatureDrawn={handleFeatureDrawn}
           boundaries={boundaries}
@@ -327,8 +335,16 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           zones={zones}
           tracks={tracksWithStatus}
           liveMarkers={liveMarkers}
+          selectedZoneId={selectedZoneId}
         />
-        <ZonePanel zones={zones} volunteers={volunteers} onStatusChange={handleStatusChange} readOnly={readOnly} />
+        <ZonePanel
+          zones={zones}
+          volunteers={volunteers}
+          onStatusChange={handleStatusChange}
+          onZoneClick={handleZoneClick}
+          selectedZoneId={selectedZoneId}
+          readOnly={readOnly}
+        />
       </div>
     </div>
   );
