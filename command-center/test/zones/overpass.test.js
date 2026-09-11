@@ -388,6 +388,32 @@ describe('fetchStreets (cache-first)', () => {
     expect(softLines).toHaveLength(0); // residential filtered out
   });
 
+  it('aborts a stalled cache-tile fetch instead of hanging zone generation forever', async () => {
+    // A plain fetch() has no built-in timeout. Simulate a cache request that
+    // never settles on its own — it should only reject once our code aborts
+    // it, then fall through to live Overpass rather than hanging indefinitely.
+    vi.useFakeTimers();
+    global.fetch = vi.fn((url, options) => {
+      if (String(url).startsWith(STREET_TILE_BASE)) {
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ elements: cachedElements }) });
+    });
+    const pending = fetchStreets(boundary);
+    // Advance well beyond one tile's timeout in case the boundary maps to
+    // more than one cache tile — each gets its own sequential 8s timer.
+    await vi.advanceTimersByTimeAsync(40000);
+    const { hardLines } = await pending;
+    expect(hardLines).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
   it('throws naming the tile when cache misses and Overpass fails', async () => {
     global.fetch = vi.fn(url => {
       if (String(url).startsWith(STREET_TILE_BASE)) {

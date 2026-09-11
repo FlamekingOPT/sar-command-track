@@ -54,6 +54,7 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.kumi.systems/api/interpreter',
 ];
 const OVERPASS_TIMEOUT_MS = 20000;
+const CACHE_TILE_TIMEOUT_MS = 8000;
 
 async function queryOverpass(query) {
   let lastError;
@@ -188,10 +189,17 @@ export async function fetchStreets(boundary, { detail = 'full', onProgress } = {
   for (let i = 0; i < tiles.length; i++) {
     onProgress?.(i, tiles.length);
     let data = null;
+    // A plain fetch() has no built-in timeout — an unresponsive CDN/tab-
+    // throttled connection would otherwise hang zone generation forever with
+    // no fallback and no error, unlike queryOverpass below. Abort and fall
+    // through to live Overpass instead of waiting indefinitely.
+    const cacheController = new AbortController();
+    const cacheTimer = setTimeout(() => cacheController.abort(), CACHE_TILE_TIMEOUT_MS);
     try {
-      const resp = await fetch(`${STREET_TILE_BASE}/${tiles[i].key}.json`);
+      const resp = await fetch(`${STREET_TILE_BASE}/${tiles[i].key}.json`, { signal: cacheController.signal });
       if (resp.ok) data = await resp.json();
-    } catch { /* cache unreachable — fall through to live Overpass */ }
+    } catch { /* cache unreachable or timed out — fall through to live Overpass */ }
+    finally { clearTimeout(cacheTimer); }
     if (!data) {
       try {
         data = await queryOverpass(buildQuery(tiles[i].bbox, 'full'));
