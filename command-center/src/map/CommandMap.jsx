@@ -14,12 +14,18 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped }, ref) {
+export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped, pins = [], pinDropMode = false, onPinDrop, onPinClick }, ref) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
   const drawModeRef = useRef(drawMode);
   const onFeatureDrawnRef = useRef(onFeatureDrawn);
+  const pinDropModeRef = useRef(pinDropMode);
+  const onPinDropRef = useRef(onPinDrop);
+  const onPinClickRef = useRef(onPinClick);
+  useEffect(() => { pinDropModeRef.current = pinDropMode; }, [pinDropMode]);
+  useEffect(() => { onPinDropRef.current = onPinDrop; }, [onPinDrop]);
+  useEffect(() => { onPinClickRef.current = onPinClick; }, [onPinClick]);
   // State (not a ref/isStyleLoaded check) so the data effects below re-run once
   // the map + sources are ready. Firestore data usually arrives before the map
   // finishes loading; without this the effects return early and never retry,
@@ -123,6 +129,19 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
         },
         paint: { 'text-color': '#991b1b', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
+      map.addSource('command-pins', { type: 'geojson', data: turf.featureCollection([]) });
+      map.addLayer({ id: 'command-pins-dot', type: 'circle', source: 'command-pins',
+        paint: { 'circle-radius': 8, 'circle-color': '#7c3aed', 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' } });
+      map.addLayer({ id: 'command-pins-labels', type: 'symbol', source: 'command-pins',
+        layout: {
+          'text-field': ['get', 'note'],
+          'text-size': 11,
+          'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Regular'],
+          'text-anchor': 'top',
+          'text-offset': [0, 0.8],
+        },
+        paint: { 'text-color': '#5b21b6', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+
       setMapLoaded(true); // sources + layers now exist — let the data effects push
     });
 
@@ -151,11 +170,29 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
     });
 
     map.on('click', 'zones-fill', e => {
+      if (pinDropModeRef.current) return; // dropping a pin takes priority over zone selection
       const hit = e.features?.[0];
       if (hit) onZoneClickRef.current?.(hit.properties.id);
     });
     map.on('mouseenter', 'zones-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'zones-fill', () => { map.getCanvas().style.cursor = ''; });
+
+    map.on('click', 'command-pins-dot', e => {
+      if (pinDropModeRef.current) return; // let the generic handler below drop a new pin instead
+      const hit = e.features?.[0];
+      if (hit) onPinClickRef.current?.({ id: hit.properties.id, note: hit.properties.note });
+    });
+    map.on('mouseenter', 'command-pins-dot', () => {
+      if (!pinDropModeRef.current) map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'command-pins-dot', () => { map.getCanvas().style.cursor = pinDropModeRef.current ? 'crosshair' : ''; });
+
+    // Plain map click (not tied to a layer) so dropping a pin works anywhere,
+    // including empty water/unmapped areas that have no zones-fill feature.
+    map.on('click', e => {
+      if (!pinDropModeRef.current) return;
+      onPinDropRef.current?.({ lat: e.lngLat.lat, lng: e.lngLat.lng });
+    });
 
     mapRef.current = map;
     drawRef.current = draw;
@@ -265,6 +302,20 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
       turf.featureCollection(liveMarkers.map(m => turf.point([m.lng, m.lat], { note: m.note ?? '' })))
     );
   }, [liveMarkers, mapLoaded]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded) return;
+    map.getSource('command-pins')?.setData(
+      turf.featureCollection(pins.map(p => turf.point([p.lng, p.lat], { id: p.id, note: p.note ?? '' })))
+    );
+  }, [pins, mapLoaded]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.getCanvas().style.cursor = pinDropMode ? 'crosshair' : '';
+  }, [pinDropMode]);
 
   return <div ref={containerRef} style={{ flex: 1, height: '100%' }} />;
 });
