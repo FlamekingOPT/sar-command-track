@@ -8,7 +8,7 @@ mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
 
 const EMPTY = turf.featureCollection([]);
 
-export function SearcherMap({ zonePolygon, points = [], markers = [], onMapTap }) {
+export function SearcherMap({ zonePolygon, points = [], markers = [], commandPins = [], onMapTap }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const loadedRef = useRef(false);
@@ -42,6 +42,19 @@ export function SearcherMap({ zonePolygon, points = [], markers = [], onMapTap }
       map.addSource('markers', { type: 'geojson', data: EMPTY });
       map.addLayer({ id: 'markers-dots', type: 'circle', source: 'markers',
         paint: { 'circle-radius': 8, 'circle-color': '#ef4444', 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' } });
+
+      map.addSource('command-pins', { type: 'geojson', data: EMPTY });
+      map.addLayer({ id: 'command-pins-dot', type: 'circle', source: 'command-pins',
+        paint: { 'circle-radius': 8, 'circle-color': '#7c3aed', 'circle-stroke-width': 2, 'circle-stroke-color': '#fff' } });
+      map.addLayer({ id: 'command-pins-labels', type: 'symbol', source: 'command-pins',
+        layout: {
+          'text-field': ['get', 'note'],
+          'text-size': 11,
+          'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Regular'],
+          'text-anchor': 'top',
+          'text-offset': [0, 0.8],
+        },
+        paint: { 'text-color': '#5b21b6', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
       map.addSource('position', { type: 'geojson', data: EMPTY });
       map.addLayer({ id: 'position-dot', type: 'circle', source: 'position',
@@ -80,6 +93,15 @@ export function SearcherMap({ zonePolygon, points = [], markers = [], onMapTap }
       turf.featureCollection(markers.map(m => turf.point([m.lng, m.lat], { note: m.note })))
     );
   }, [markers]);
+
+  // Pins dropped by command center
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current) return;
+    map.getSource('command-pins')?.setData(
+      turf.featureCollection(commandPins.map(p => turf.point([p.lng, p.lat], { note: p.note ?? '' })))
+    );
+  }, [commandPins]);
 
   return <div ref={containerRef} style={{ position: 'absolute', inset: 0 }} />;
 }

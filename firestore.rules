@@ -41,6 +41,10 @@ service cloud.firestore {
         allow update: if request.auth != null;
         allow delete: if request.auth != null; // admin clearing out an old search
       }
+      match /days/{dayId}/pins/{pinId} {
+        allow read: if true;
+        allow create, update, delete: if request.auth != null; // command-center only
+      }
     }
   }
 }
