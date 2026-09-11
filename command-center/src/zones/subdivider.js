@@ -149,9 +149,12 @@ const BOUNDARY_ROAD_MATCH_TOLERANCE_M = 15;
 // lands on a real, sizeable road reads better to command than one that cuts
 // through the middle of an ordinary block. secondary/tertiary score highest;
 // residential/living_street/unclassified score low; no nearby road scores 0.
-// Hard classes aren't listed here — a hard-adjacent border is scored by the
-// separate hard-road-crossing penalty in refineZoneBoundaries (Task 6), not
-// this table.
+// Hard classes aren't listed here — a hard-adjacent border was scored by the
+// separate hard-road-crossing penalty in the old refineZoneBoundaries, now
+// removed (2026-09-10 redesign), not this table. There is currently no live
+// consumer of this table; it's kept because the field it depends on
+// (`roadClass`) is still populated and harmless to leave — it may feed a
+// future "snap a boundary to a named road" feature.
 export const ROAD_CLASS_QUALITY = {
   secondary: 1.0,
   tertiary: 0.7,
@@ -196,135 +199,17 @@ function sharedAdjacency(polyA, polyB, hardLines, softLines = []) {
 }
 
 // Isoperimetric quotient: 1.0 for a circle, lower for elongated/notched
-// shapes. Used by refineZoneBoundaries (2026-07-19 spec, Part B, Task 6) to
-// score whether a candidate move makes a zone's shape rounder or worse.
+// shapes. Was used by refineZoneBoundaries (2026-07-19 spec, Part B, Task 6)
+// to score whether a candidate move made a zone's shape rounder or worse;
+// that function was removed in the 2026-09-10 k-means redesign. Stays
+// exported — still useful for reporting/comparing shape quality even
+// without a live scoring pass consuming it.
 export function isoperimetricQuotient(poly) {
   const area = turf.area(poly);
   let perimM;
   try { perimM = turf.length(turf.polygonToLine(poly), { units: 'kilometers' }) * 1000; }
   catch { return 0; }
   return perimM > 0 ? (4 * Math.PI * area) / (perimM * perimM) : 0;
-}
-
-// Scored boundary-refinement pass (2026-07-19 spec, Part B). Runs after
-// growth + runt absorption produce `regions`, before they're flattened into
-// final polygons. Unifies four issues that used to be four separate, cruder
-// mechanisms: zero shape objective in growth (#2), the binary "last resort"
-// hard-road absorption rule (#3), standing slivers with no graph-reachable
-// neighbor (#4), and a greedy split that can't undo an early bad choice, e.g.
-// landing one block off of a better arterial (#5, the Vermont Ave case).
-//
-// Field-confirmed need (2026-07-20): a real 143-zone search produced a zone
-// that genuinely crosses the San Diego Freeway via the OLD rule's binary
-// "absorb across a hard road as last resort" — a real, walkable pocket of
-// streets got folded across an active freeway because it had no soft
-// neighbor, without ever weighing whether that was actually a good idea.
-const WEIGHT_BALANCE_SCORE_WEIGHT = 1;
-const COMPACTNESS_SCORE_WEIGHT = 1;
-const BOUNDARY_QUALITY_SCORE_WEIGHT = 1;
-const HARD_ROAD_CROSSING_PENALTY = 3;
-const MOVE_ACCEPTANCE_THRESHOLD = 0.05;
-const MAX_MOVES_PER_BLOCK = 4;
-
-function isConnected(blockIndices, allNeighbors) {
-  if (blockIndices.length <= 1) return true;
-  const set = new Set(blockIndices);
-  const seen = new Set([blockIndices[0]]);
-  const queue = [blockIndices[0]];
-  while (queue.length) {
-    const cur = queue.shift();
-    for (const nb of allNeighbors[cur] ?? []) {
-      if (set.has(nb) && !seen.has(nb)) { seen.add(nb); queue.push(nb); }
-    }
-  }
-  return seen.size === blockIndices.length;
-}
-
-export function refineZoneBoundaries(regions, blocks, adjacency, weights) {
-  const live = regions.filter(r => !r.dead);
-  if (live.length < 2) return;
-
-  const allNeighbors = blocks.map(() => []);
-  for (const e of adjacency) { allNeighbors[e.a].push(e.b); allNeighbors[e.b].push(e.a); }
-
-  const regionOf = new Array(blocks.length);
-  live.forEach(r => r.blocks.forEach(b => { regionOf[b] = r; }));
-
-  const totalWeight = weights.reduce((s, w) => s + w, 0);
-  const maxMoves = blocks.length * MAX_MOVES_PER_BLOCK;
-  let moves = 0;
-  let improved = true;
-  while (improved && moves < maxMoves) {
-    improved = false;
-    for (const e of adjacency) {
-      const ra = regionOf[e.a], rb = regionOf[e.b];
-      if (!ra || !rb || ra === rb || ra.dead || rb.dead) continue;
-
-      for (const [moving, from, to] of [[e.a, ra, rb], [e.b, rb, ra]]) {
-        // One of these two directions can dissolve `from` into `to` (see
-        // below) before the *other* direction of this same edge is
-        // evaluated — the outer ra.dead/rb.dead check above only runs once
-        // per edge, before either direction executes. Without this re-check,
-        // the second direction could still merge blocks INTO the just-killed
-        // region: `to.blocks` would gain blocks/weight while `to.dead`
-        // stayed true, and every block routed there would be silently
-        // dropped by `regions.filter(r => !r.dead)` downstream, with no
-        // adjacency edge ever able to reach it again (its region is dead, so
-        // every edge touching it is skipped by the check above from then on).
-        if (from.dead || to.dead) continue;
-
-        const remaining = from.blocks.filter(b => b !== moving);
-        if (remaining.length > 0 && !isConnected(remaining, allNeighbors)) continue;
-
-        // Fair share is recomputed against how many LIVE regions would exist
-        // after this move — a move that fully dissolves `from` (remaining
-        // empty) reduces the effective zone count by one, same as the
-        // existing runt-absorption logic already does elsewhere in this file.
-        const liveCountBefore = regions.filter(r => !r.dead).length;
-        const liveCountAfter = remaining.length > 0 ? liveCountBefore : liveCountBefore - 1;
-        const fairShareBefore = totalWeight / liveCountBefore;
-        const fairShareAfter = totalWeight / Math.max(1, liveCountAfter);
-
-        const blockWeight = weights[moving];
-        const weightDelta =
-          (Math.abs(from.weight - fairShareBefore) + Math.abs(to.weight - fairShareBefore)) -
-          ((remaining.length > 0 ? Math.abs(from.weight - blockWeight - fairShareAfter) : 0) +
-            Math.abs(to.weight + blockWeight - fairShareAfter));
-
-        let compactDelta;
-        try {
-          const fromPolyBefore = from.blocks.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[from.blocks[0]]);
-          const toPolyBefore = to.blocks.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[to.blocks[0]]);
-          const toPolyAfter = [...to.blocks, moving].slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[to.blocks[0]]);
-          const compactBefore = isoperimetricQuotient(fromPolyBefore) + isoperimetricQuotient(toPolyBefore);
-          const compactAfter = remaining.length > 0
-            ? isoperimetricQuotient(remaining.slice(1).reduce((p, i) => safeUnion(p, blocks[i]), blocks[remaining[0]])) + isoperimetricQuotient(toPolyAfter)
-            : isoperimetricQuotient(toPolyAfter);
-          compactDelta = (compactAfter - compactBefore) / 2;
-        } catch { continue; }
-
-        const boundaryQuality = e.hard ? 0 : (ROAD_CLASS_QUALITY[e.roadClass] ?? 0);
-        const hardPenalty = e.hard ? HARD_ROAD_CROSSING_PENALTY : 0;
-
-        const score =
-          WEIGHT_BALANCE_SCORE_WEIGHT * weightDelta +
-          COMPACTNESS_SCORE_WEIGHT * compactDelta +
-          BOUNDARY_QUALITY_SCORE_WEIGHT * boundaryQuality -
-          hardPenalty;
-
-        if (score > MOVE_ACCEPTANCE_THRESHOLD) {
-          from.blocks = remaining;
-          from.weight -= blockWeight;
-          to.blocks = [...to.blocks, moving];
-          to.weight += blockWeight;
-          regionOf[moving] = to;
-          if (remaining.length === 0) from.dead = true;
-          moves++;
-          improved = true;
-        }
-      }
-    }
-  }
 }
 
 // maxBlockAreaM2 rejects polygonize artifacts (faces leaking past real
@@ -537,18 +422,22 @@ export function buildBlocks(boundary, hardLines, softLines, {
   return { blocks, adjacency };
 }
 
-// Divide blocks among zoneCount zones by seeded region-growing, balancing a
-// blended "search effort" weight per zone: effort = area^BLOCK_EFFORT_EXPONENT.
-// Pure block COUNT (exponent 0) let two mega-blocks form one monster zone next
-// to sliver zones when block sizes varied 100x (Hancock Park field bug); pure
-// AREA (exponent 1) is the old uniform model that ignores density. The square
+// Divide blocks among zoneCount zones by weighted k-means clustering
+// (clusterCompartmentBlocks above), balancing a blended "search effort"
+// weight per zone: effort = area^BLOCK_EFFORT_EXPONENT. Pure block COUNT
+// (exponent 0) let two mega-blocks form one monster zone next to sliver
+// zones when block sizes varied 100x (Hancock Park field bug); pure AREA
+// (exponent 1) is the old uniform model that ignores density. The square
 // root sits between: dense areas still get smaller zones, but a block 100x
 // larger only counts 10x more, which bounds the size spread.
 //
-// Region-growing rather than pairwise cluster merging is deliberate: greedy
-// smallest-pair-first merging strands single blocks between already-grown
-// neighbors, steered by float noise in equal-area tie-breaks. Growing every
-// zone to an explicit per-zone target keeps balance and determinism.
+// K-means clustering rather than growing zones outward block-by-block is
+// deliberate (2026-07-23 spec): growth toward a weight target has zero
+// shape objective and can only be patched after the fact, not prevented.
+// Deciding compact, effort-balanced cluster CENTERS first and assigning
+// real blocks to them afterward produces rounder zones by construction —
+// validated against a real 143-zone West LA boundary (median isoperimetric
+// compactness 0.531 -> 0.586, zones below 0.25 compactness 11 -> 3).
 //
 // Hard edges (motorway/trunk/primary, waterways) are absent from the adjacency
 // lists, so a zone can never grow across one; hard-boxed regions close early
@@ -615,6 +504,150 @@ export function computeBlockEfforts(blocks, streetLines) {
 // effort allows, so legitimately small dense-urban zones are never absorbed.
 const RUNT_AREA_FRACTION = 0.1;
 
+// ---- Weighted k-means region-forming (2026-07-23 spec) ----
+// Replaces greedy BFS growth: instead of growing zones outward toward a
+// weight target with zero shape objective, this decides compact clusters
+// geometrically FIRST (by block centroid, weighted so a heavy block pulls a
+// cluster's center toward itself more than a light one) and only unions
+// real blocks into them afterward. Validated against a real 143-zone West
+// LA boundary: median isoperimetric compactness 0.531 -> 0.586, zones below
+// 0.25 compactness 11 -> 3.
+
+// First seed: highest weight, ties broken by lowest index (ascending scan,
+// only updates on strictly-greater weight, so the first-seen max wins ties).
+// Each subsequent seed: the not-yet-picked block farthest from its nearest
+// existing seed (farthest-point sampling), same ascending-scan tie-break.
+// This spreads seeds across the compartment's shape rather than clustering
+// them together — deterministic, no Math.random anywhere.
+function farthestPointSeeds(compIndices, k, weights, centroids) {
+  let first = compIndices[0];
+  for (const i of compIndices) {
+    if (weights[i] > weights[first]) first = i;
+  }
+  const seeds = [first];
+  while (seeds.length < k) {
+    let best = -1, bestDist = -1;
+    for (const i of compIndices) {
+      if (seeds.includes(i)) continue;
+      let minDist = Infinity;
+      for (const s of seeds) {
+        minDist = Math.min(minDist, turf.distance(centroids[i], centroids[s], { units: 'meters' }));
+      }
+      if (minDist > bestDist) { best = i; bestDist = minDist; }
+    }
+    if (best === -1) break; // fewer candidates than k — caller already caps k at compIndices.length
+    seeds.push(best);
+  }
+  return seeds;
+}
+
+// A heavy block pulls its cluster's center toward itself more than a light
+// one — this is what keeps clusters EFFORT-balanced during Lloyd's
+// iteration, not just area/count-balanced.
+function weightedCenter(indices, weights, centroids) {
+  let sw = 0, sx = 0, sy = 0;
+  for (const i of indices) {
+    const w = weights[i];
+    sw += w;
+    sx += w * centroids[i][0];
+    sy += w * centroids[i][1];
+  }
+  return sw > 0 ? [sx / sw, sy / sw] : centroids[indices[0]];
+}
+
+// Nearest-centroid assignment doesn't guarantee every block in a cluster is
+// graph-reachable from the others (rare — 3 of 144 clusters in the real
+// validation run). Split any cluster that isn't into one part per
+// connected component, reusing the same soft-only block-adjacency graph
+// compartment detection already built — "don't force a disconnected shape
+// into one zone" is a principle this file already applies to multi-part
+// polygonize artifacts elsewhere.
+//
+// Exported (2026-09-11 fix-round-2) solely so it can be unit-tested directly
+// against a hand-constructed disconnected index/neighbors pair — the full
+// seeding+Lloyd's-iteration pipeline proved strongly resistant to organically
+// producing a genuinely graph-disconnected cluster on synthetic test shapes
+// (two attempts tried and failed; see subdivider.test.js). Only
+// mergeBlocksToZones's signature and return shape are a frozen contract;
+// nothing requires this helper to stay unexported.
+export function connectedParts(indices, neighbors) {
+  const set = new Set(indices);
+  const seen = new Set();
+  const parts = [];
+  for (const start of indices) {
+    if (seen.has(start)) continue;
+    const part = [];
+    const queue = [start];
+    seen.add(start);
+    while (queue.length) {
+      const cur = queue.shift();
+      part.push(cur);
+      for (const nb of neighbors[cur] ?? []) {
+        if (set.has(nb) && !seen.has(nb)) {
+          seen.add(nb);
+          queue.push(nb);
+        }
+      }
+    }
+    parts.push(part);
+  }
+  return parts;
+}
+
+const KMEANS_MAX_ITERATIONS = 20;
+
+// Clusters one compartment's blocks into `k` regions. k<=1 or a single-block
+// compartment skips clustering entirely (matches this file's existing
+// length<=1 guard pattern, e.g. orderZonesForNumbering). Otherwise: seed,
+// assign every block to its nearest seed by centroid distance, recompute
+// each seed's position as the effort-weighted average of its assigned
+// blocks, repeat. Terminates when a full assignment pass changes nothing,
+// or after KMEANS_MAX_ITERATIONS (a hard cap independent of convergence,
+// matching this file's existing termination-safety philosophy elsewhere —
+// see buildBlocks/dissolveSlivers). Non-contiguous clusters are split
+// before returning, so every result region is one connected group of
+// blocks — never a shape nearest-centroid math accidentally tore in two.
+function clusterCompartmentBlocks(compIndices, k, weights, areasM2, centroids, neighbors) {
+  const toRegion = indices => ({
+    blocks: [...indices],
+    weight: indices.reduce((s, i) => s + weights[i], 0),
+    areaM2: indices.reduce((s, i) => s + areasM2[i], 0),
+  });
+
+  if (k <= 1 || compIndices.length <= 1) {
+    return [toRegion(compIndices)];
+  }
+
+  const seeds = farthestPointSeeds(compIndices, Math.min(k, compIndices.length), weights, centroids);
+  let seedCenters = seeds.map(s => centroids[s]);
+  let assignment = null;
+
+  for (let iter = 0; iter < KMEANS_MAX_ITERATIONS; iter++) {
+    const next = new Map();
+    for (const i of compIndices) {
+      let bestSeed = 0, bestDist = Infinity;
+      for (let si = 0; si < seedCenters.length; si++) {
+        const d = turf.distance(centroids[i], seedCenters[si], { units: 'meters' });
+        if (d < bestDist) { bestDist = d; bestSeed = si; }
+      }
+      next.set(i, bestSeed);
+    }
+    const changed = !assignment || compIndices.some(i => assignment.get(i) !== next.get(i));
+    assignment = next;
+    if (!changed) break;
+    seedCenters = seedCenters.map((center, si) => {
+      const members = compIndices.filter(i => assignment.get(i) === si);
+      return members.length ? weightedCenter(members, weights, centroids) : center;
+    });
+  }
+
+  const clusters = seedCenters
+    .map((_, si) => compIndices.filter(i => assignment.get(i) === si))
+    .filter(c => c.length);
+
+  return clusters.flatMap(cluster => connectedParts(cluster, neighbors).map(toRegion));
+}
+
 export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {}) {
   if (!blocks.length) return [];
   const areasM2 = blocks.map(b => turf.area(b));
@@ -656,52 +689,11 @@ export function mergeBlocksToZones(blocks, adjacency, zoneCount, { efforts } = {
   const totalCompWeight = compWeights.reduce((s, w) => s + w, 0) || 1;
   const compAlloc = compWeights.map(w => Math.max(1, Math.round(zoneCount * w / totalCompWeight)));
 
-  const assigned = new Array(blocks.length).fill(false);
+  const centroids = blocks.map(b => turf.centroid(b).geometry.coordinates);
   const regions = [];
   comps.forEach((comp, ci) => {
     const compCount = Math.min(compAlloc[ci], comp.length);
-    const baseTarget = compWeights[ci] / compCount;
-    let remainingWeight = compWeights[ci];
-    let unassigned = comp.length;
-    let made = 0;
-    while (unassigned > 0) {
-      const zonesRemaining = Math.max(1, compCount - made);
-      // adaptive target absorbs float noise, but once the planned count is
-      // spent it degenerates to "all remaining weight" and the LAST region
-      // eats the compartment's leftovers as one giant zone (88 street-km
-      // zones, field 2026-07-15). Cap at 1.5x the fair share — leftovers
-      // form extra regions that runt absorption folds or that stand as
-      // legitimate extra zones.
-      const target = Math.min(remainingWeight / zonesRemaining, baseTarget * 1.5);
-      // never grow so far that the remaining zones can't get a block each —
-      // float noise in geodesic areas otherwise lets a region overshoot its
-      // weight target by one block and starve the last zone
-      const maxBlocks = unassigned - (zonesRemaining - 1);
-      const seed = comp.find(i => !assigned[i]);
-      const region = { blocks: [seed], weight: weights[seed], areaM2: areasM2[seed] };
-      assigned[seed] = true;
-      const queue = [seed];
-      while (region.weight < target && region.blocks.length < maxBlocks && queue.length) {
-        const cur = queue.shift();
-        for (const nb of neighbors[cur]) {
-          if (assigned[nb] || region.weight >= target || region.blocks.length >= maxBlocks) continue;
-          // a BIG block grabbed at the last moment used to double a zone's
-          // workload (25 km target, 51+ km zones in the field) — let it seed
-          // its own zone instead. Small blocks may still overshoot slightly;
-          // overshoot is bounded by the block's own size (bin-packing rule).
-          if (weights[nb] > target * 0.5 && region.weight + weights[nb] > target * 1.2) continue;
-          assigned[nb] = true;
-          region.blocks.push(nb);
-          region.weight += weights[nb];
-          region.areaM2 += areasM2[nb];
-          queue.push(nb);
-        }
-      }
-      remainingWeight -= region.weight;
-      unassigned -= region.blocks.length;
-      made += 1;
-      regions.push(region);
-    }
+    regions.push(...clusterCompartmentBlocks(comp, compCount, weights, areasM2, centroids, neighbors));
   });
 
   // Runt absorption. Threshold is fixed from the initial distribution so the

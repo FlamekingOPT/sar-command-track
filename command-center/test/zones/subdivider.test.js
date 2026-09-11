@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2, isoperimetricQuotient, refineZoneBoundaries } from '../../src/zones/subdivider.js';
+import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2, isoperimetricQuotient, connectedParts } from '../../src/zones/subdivider.js';
 
 describe('allocateZoneCounts', () => {
   it('splits proportionally by block count and sums exactly to the total', () => {
@@ -252,79 +252,6 @@ describe('isoperimetricQuotient', () => {
   });
 });
 
-describe('refineZoneBoundaries', () => {
-  const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
-
-  it('moves a block across a well-classed road when it improves balance (Vermont Ave scenario)', () => {
-    // 2026-07-19 spec issue #5: "a zone border landed on an arbitrary
-    // residential street one block off of Vermont Ave, when using Vermont as
-    // the split point would have produced a more even division." Region A
-    // starts with 3 blocks (weight 30) vs region B's 1 block (weight 10) — a
-    // better-classed road sits between blocks 1 and 2, which would give a
-    // perfectly even 20/20 split instead.
-    const blocksArr = [SQX(0), SQX(1), SQX(2), SQX(3)];
-    const adjacency = [
-      { a: 0, b: 1, hard: false, roadClass: null },
-      { a: 1, b: 2, hard: false, roadClass: 'tertiary' },
-      { a: 2, b: 3, hard: false, roadClass: null },
-    ];
-    const weights = [10, 10, 10, 10];
-    const regions = [
-      { blocks: [0, 1, 2], weight: 30, areaM2: 3, dead: false },
-      { blocks: [3], weight: 10, areaM2: 1, dead: false },
-    ];
-    refineZoneBoundaries(regions, blocksArr, adjacency, weights);
-    const sorted = regions.map(r => [...r.blocks].sort((a, b) => a - b)).sort((a, b) => a[0] - b[0]);
-    expect(sorted[0]).toEqual([0, 1]);
-    expect(sorted[1]).toEqual([2, 3]);
-  });
-
-  it('rescues a hard-road-isolated compartment into a neighbor when the balance gain clearly outweighs the penalty (issue #3 / the zone-95 field case)', () => {
-    // A single tiny block is walled off by a hard road, with a much larger
-    // region on the other side as its only possible merge target. Confirmed
-    // field bug (2026-07-20): the OLD binary "last resort" rule always merges
-    // in this situation even when the isolated block is real, walkable
-    // territory — producing a zone a searcher can't complete without crossing
-    // an active freeway (zone 95 / San Diego Freeway in a real 143-zone
-    // search). The continuous score must still allow a beneficial rescue like
-    // this one — a 1-block region is far below any reasonable fair share.
-    const blocksArr = [SQX(0), SQX(1), SQX(2)];
-    const adjacency = [{ a: 0, b: 1, hard: true, roadClass: null }, { a: 1, b: 2, hard: false, roadClass: null }];
-    const weights = [10, 40, 40];
-    const regions = [
-      { blocks: [0], weight: 10, areaM2: 1, dead: false },
-      { blocks: [1, 2], weight: 80, areaM2: 2, dead: false },
-    ];
-    refineZoneBoundaries(regions, blocksArr, adjacency, weights);
-    const nonEmpty = regions.filter(r => r.blocks.length);
-    expect(nonEmpty).toHaveLength(1);
-    expect(nonEmpty[0].blocks.sort((a, b) => a - b)).toEqual([0, 1, 2]);
-  });
-
-  it('does NOT merge an isolated hard-boxed compartment that is legitimately zone-worthy on its own', () => {
-    // Same hard-road topology, but both sides are already at a comfortable,
-    // roughly-equal size — merging would just make one zone twice the size of
-    // the other for no real balance gain, so the hard-road penalty must win.
-    const blocksArr = [SQX(0), SQX(1)];
-    const adjacency = [{ a: 0, b: 1, hard: true, roadClass: null }];
-    const weights = [40, 40];
-    const regions = [
-      { blocks: [0], weight: 40, areaM2: 1, dead: false },
-      { blocks: [1], weight: 40, areaM2: 1, dead: false },
-    ];
-    refineZoneBoundaries(regions, blocksArr, adjacency, weights);
-    expect(regions[0].blocks).toEqual([0]);
-    expect(regions[1].blocks).toEqual([1]);
-  });
-
-  it('does nothing with fewer than 2 live regions', () => {
-    const blocksArr = [SQX(0)];
-    const regions = [{ blocks: [0], weight: 10, areaM2: 1, dead: false }];
-    expect(() => refineZoneBoundaries(regions, blocksArr, [], [10])).not.toThrow();
-    expect(regions[0].blocks).toEqual([0]);
-  });
-});
-
 describe('sharedAdjacency road class (via buildBlocks adjacency)', () => {
   it('reports the soft road class nearest a soft-adjacent border', () => {
     const classedSoft = [
@@ -510,22 +437,36 @@ describe('computeBlockEfforts', () => {
   });
 });
 
-describe('mergeBlocksToZones with explicit efforts (street-length balancing)', () => {
+describe('mergeBlocksToZones — extreme weight skew on a 1-D chain (k-means trade-off)', () => {
   const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
 
-  it('balances zones by provided efforts, not by area', () => {
-    // 4 EQUAL-AREA blocks in a soft chain; block 0 holds 3x the street length
-    // of the rest combined (dense grid vs open hillside). Field bug: at city
-    // LOD, sqrt(block area) said big-blocks-are-cheap, producing huge zones
-    // over visibly dense areas. With street-length efforts, the dense block
-    // stands alone and the three sparse ones form the other zone.
+  it('yields a positional 2-2 split rather than isolating the heavy block, unlike the old greedy-growth algorithm', () => {
+    // 4 EQUAL-AREA blocks in a soft chain; block 0 holds 10x the street length
+    // of any other single block. Under the OLD greedy-weight-target-growth
+    // algorithm this isolated block 0 into its own zone (a clean 1-vs-3 split
+    // by weight). Under k-means (2026-07-23 redesign) seed 1 is still block 0
+    // (highest weight) but seed 2 is the FARTHEST block by distance (block 3,
+    // not chosen by weight) — nearest-centroid assignment plus weighted Lloyd's
+    // refinement converges to a positional 2-vs-2 split instead, since block 0's
+    // huge weight barely moves its cluster's centroid once block 1 joins it.
+    // This is an accepted trade-off of the new algorithm for extreme (10x+)
+    // weight skew on a near-1-D chain, not a bug — see docs/superpowers/specs/
+    // 2026-07-23-zone-growth-redesign-design.md and the plan's ledger.
+    //
+    // NOTE: this fixture no longer distinguishes "with efforts" from "without"
+    // — skewed efforts, uniform efforts, and no efforts option at all all
+    // converge to the same [2,2] split for THIS specific shape (verified).
+    // Real efforts-change-the-outcome coverage lives in the
+    // 'k-means region-forming: effort-weighted balancing' describe block
+    // below, which uses a shape where the effort-weighted centroid pull
+    // actually flips the partition.
     const blocks = [SQX(0), SQX(1), SQX(2), SQX(3)];
     const adj = [0, 1, 2].map(i => ({ a: i, b: i + 1, hard: false }));
     const zones = mergeBlocksToZones(blocks, adj, 2, { efforts: [30_000, 3_000, 3_000, 3_000] });
     expect(zones).toHaveLength(2);
     const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
-    expect(widths[0]).toBeCloseTo(1, 5);
-    expect(widths[1]).toBeCloseTo(3, 5);
+    expect(widths[0]).toBeCloseTo(2, 5);
+    expect(widths[1]).toBeCloseTo(2, 5);
   });
 });
 
@@ -583,6 +524,167 @@ describe('mergeBlocksToZones — per-compartment zone allocation', () => {
     const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
     // dense chain must be split — no zone may span the whole 6-block chain
     expect(widths[widths.length - 1]).toBeLessThanOrEqual(3.01);
+  });
+});
+
+describe('mergeBlocksToZones — k-means region-forming: determinism', () => {
+  const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
+
+  it('produces identical output across repeated calls with identical input (no Math.random anywhere)', () => {
+    const blocks = [SQX(0), SQX(1), SQX(2), SQX(3), SQX(4), SQX(5)];
+    const adj = [0, 1, 2, 3, 4].map(i => ({ a: i, b: i + 1, hard: false }));
+    const efforts = [12, 7, 30, 4, 9, 15];
+    const run = () => mergeBlocksToZones(blocks, adj, 3, { efforts })
+      .map(z => turf.bbox(z).map(n => Math.round(n * 1e6) / 1e6))
+      .sort((a, b) => a[0] - b[0]);
+    expect(run()).toEqual(run());
+  });
+});
+
+describe('mergeBlocksToZones — k-means region-forming: effort-weighted balancing', () => {
+  const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
+
+  it('splits a 4-block chain into a light pair and a heavy pair, balanced by effort not position', () => {
+    // Hand-verified via weighted Lloyd's iteration (see plan doc): seeds start
+    // at the heaviest block (index 2) and the block farthest from it (index
+    // 0); the first assignment pass is lopsided (a 3-vs-1 split), but
+    // recomputing each cluster's EFFORT-weighted centroid and reassigning
+    // pulls it to the effort-balanced result within 2 rounds: {0,1} (weight
+    // 20) vs {2,3} (weight 60) — not a positional 2-and-2 split.
+    const blocks = [SQX(0), SQX(1), SQX(2), SQX(3)];
+    const adj = [0, 1, 2].map(i => ({ a: i, b: i + 1, hard: false }));
+    const zones = mergeBlocksToZones(blocks, adj, 2, { efforts: [10, 10, 35, 25] });
+    expect(zones).toHaveLength(2);
+    const widths = zones.map(z => { const b = turf.bbox(z); return b[2] - b[0]; }).sort((a, b) => a - b);
+    expect(widths[0]).toBeCloseTo(2, 5); // {0,1}
+    expect(widths[1]).toBeCloseTo(2, 5); // {2,3}
+    // Confirm it's the RIGHT pair, not just any 2-and-2 split: the zone
+    // containing block 0's corner must also contain block 1's, not block 3's.
+    const zoneOf = pt => zones.find(z => turf.booleanPointInPolygon(pt, z));
+    expect(zoneOf(turf.point([0.5, 0.5]))).toBe(zoneOf(turf.point([1.5, 0.5])));
+    expect(zoneOf(turf.point([2.5, 0.5]))).toBe(zoneOf(turf.point([3.5, 0.5])));
+  });
+});
+
+describe('mergeBlocksToZones — k-means region-forming: branching-shape regression (Y-shape)', () => {
+  // A "Y" shape: a hub block at the origin with three arms — a LONG east arm
+  // (4 blocks, with a heavy weight on its far tip) and two short single-block
+  // arms, one northwest and one southwest of the hub. The hub is the ONLY
+  // thing connecting the NW and SW arms to each other or to the east arm.
+  //
+  // This fixture was found EMPIRICALLY by running the real implementation
+  // (mergeBlocksToZones) against a batch of candidate shapes — plus-shapes
+  // with unequal arms, a two-cluster-plus-bridge shape, an L-shape, and this
+  // Y-shape — and checking which ones actually produced zones.length >
+  // zoneCount. A prior hand-derived T-shape fixture (bar + 2-block stem) was
+  // traced by hand and believed to disconnect, but running the real code
+  // showed it always converges to a contiguous bar/stem split, for any tip
+  // weight up to 1,000,000 — the hand math had an error.
+  //
+  // IMPORTANT — corrected 2026-09-11 (fix-round-2): this fixture does NOT
+  // exercise connectedParts. Instrumenting the real pipeline showed Lloyd's
+  // iteration converges to two clusters that are BOTH already
+  // graph-connected on their own — connectedParts never splits anything
+  // here. The observed zones.length === 3 instead comes from an entirely
+  // different, pre-existing mechanism: the two converged regions are
+  // unbalanced enough that runt absorption folds them into one region; that
+  // merged region's blocks touch each other at only a single corner point,
+  // so turf.union produces a MultiPolygon; and the file's PRE-EXISTING (not
+  // part of this task) multi-part sweep further down mergeBlocksToZones
+  // splits that MultiPolygon into 3 separate zones. So this test is still
+  // legitimate, valuable regression coverage — it proves k-means + runt
+  // absorption + the point-touch MultiPolygon sweep together still produce
+  // valid single-Polygon zones with conserved area for a real branching
+  // compartment shape — it just isn't proof that connectedParts fires. See
+  // the 'connectedParts — non-contiguous group splitting' describe block
+  // below for direct, isolated coverage of that logic.
+  const SQ = (x, y) => turf.polygon([[[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]]]);
+  const blocks = [
+    SQ(0, 0),                                // 0: hub
+    SQ(1, 0), SQ(2, 0), SQ(3, 0), SQ(4, 0),  // 1-4: long east arm (4 is the tip)
+    SQ(-1, 1),                                // 5: short NW arm
+    SQ(-1, -1),                               // 6: short SW arm
+  ];
+  const adj = [
+    { a: 0, b: 1, hard: false }, { a: 1, b: 2, hard: false },
+    { a: 2, b: 3, hard: false }, { a: 3, b: 4, hard: false },
+    { a: 0, b: 5, hard: false },
+    { a: 0, b: 6, hard: false },
+  ];
+  const efforts = [1, 1, 1, 1, 50, 1, 1]; // block 4 (east arm tip) is the heavy pull
+
+  it('produces valid single-Polygon zones with conserved area for a branching compartment (via runt absorption + point-touch MultiPolygon sweep, not connectedParts)', () => {
+    const zones = mergeBlocksToZones(blocks, adj, 2, { efforts });
+    // Requesting 2 zones but getting a 3rd from the point-touch MultiPolygon
+    // sweep described above.
+    expect(zones).toHaveLength(3);
+    // Every returned zone must be a single contiguous Polygon (not a
+    // MultiPolygon standing in for two disconnected pieces).
+    for (const z of zones) expect(z.geometry.type).toBe('Polygon');
+    // No area is lost or duplicated in the split.
+    const total = blocks.reduce((s, b) => s + turf.area(b), 0);
+    const covered = zones.reduce((s, z) => s + turf.area(z), 0);
+    expect(covered / total).toBeCloseTo(1, 3);
+  });
+});
+
+describe('connectedParts — non-contiguous group splitting', () => {
+  // Direct, isolated unit coverage of the BFS-reachability splitting logic
+  // clusterCompartmentBlocks uses when a k-means cluster's members aren't
+  // all graph-adjacent. Added 2026-09-11 (fix-round-2): the Y-shape test
+  // above was believed to exercise this path but, per instrumentation of the
+  // real pipeline, does not — Lloyd's iteration on that fixture converges to
+  // two already-connected clusters. Two attempts at finding a fixture that
+  // organically drives connectedParts to split a cluster through the full
+  // seeding+Lloyd's-iteration pipeline failed; planar block-adjacency graphs
+  // combined with nearest-centroid Voronoi-style partitioning proved
+  // strongly resistant to producing genuine disconnection on synthetic
+  // grid/branching shapes. Per the spec's own Testing section ("a
+  // CONSTRUCTED case where nearest-centroid assignment WOULD group two
+  // non-touching blocks together"), this constructs the disconnected input
+  // directly instead.
+  it('splits a manually-constructed disconnected set of indices into its connected components', () => {
+    // Indices 0 and 1 are mutually reachable (an edge connects them); indices
+    // 2 and 3 are also mutually reachable; but NOTHING connects {0,1} to {2,3}.
+    const neighbors = [[1], [0], [3], [2]]; // 0<->1, 2<->3, no cross-links
+    const parts = connectedParts([0, 1, 2, 3], neighbors).map(p => [...p].sort((a, b) => a - b));
+    parts.sort((a, b) => a[0] - b[0]);
+    expect(parts).toEqual([[0, 1], [2, 3]]);
+  });
+
+  it('returns one component when everything is reachable', () => {
+    const neighbors = [[1], [0, 2], [1]];
+    const parts = connectedParts([0, 1, 2], neighbors);
+    expect(parts).toHaveLength(1);
+    expect([...parts[0]].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
+  it('does not let a BFS walk outside the tested index set via a neighbor that belongs to another group', () => {
+    // Block 2 is a real neighbor of both 1 and 3 in the full graph, but is NOT
+    // part of the group being split ([0,1,3]) — it belongs to some other
+    // cluster. The containment guard (set.has(nb)) must stop the BFS from
+    // walking through it, or [0,1] and [3] would incorrectly merge into one
+    // component via the "back door" of block 2's real adjacency.
+    const neighbors = [[1], [0, 2], [1, 3], [2]];
+    const parts = connectedParts([0, 1, 3], neighbors).map(p => [...p].sort((a, b) => a - b));
+    parts.sort((a, b) => a[0] - b[0]);
+    expect(parts).toEqual([[0, 1], [3]]);
+  });
+});
+
+describe('mergeBlocksToZones — k-means region-forming: hard-road respect', () => {
+  it('never puts two hard-adjacent-only blocks in the same zone, regardless of geometric closeness', () => {
+    // FOUR_BLOCKS/FOUR_ADJACENCY (defined above): 0/1 and 2/3 are soft pairs;
+    // 0/2 and 1/3 are hard pairs. Compartment detection (unchanged by this
+    // task) already guarantees this by construction — this is the regression
+    // test the spec asks for given how much of this file's history is
+    // exactly this kind of violation.
+    const zones = mergeBlocksToZones(FOUR_BLOCKS, FOUR_ADJACENCY, 2);
+    const zoneOf = pt => zones.find(z => turf.booleanPointInPolygon(pt, z));
+    // block 0 center (0.5, 1.5) and block 2 center (0.5, 0.5) are hard-adjacent
+    expect(zoneOf(turf.point([0.5, 1.5]))).not.toBe(zoneOf(turf.point([0.5, 0.5])));
+    // block 1 center (1.5, 1.5) and block 3 center (1.5, 0.5) are hard-adjacent
+    expect(zoneOf(turf.point([1.5, 1.5]))).not.toBe(zoneOf(turf.point([1.5, 0.5])));
   });
 });
 
