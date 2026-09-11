@@ -556,7 +556,15 @@ function weightedCenter(indices, weights, centroids) {
 // compartment detection already built — "don't force a disconnected shape
 // into one zone" is a principle this file already applies to multi-part
 // polygonize artifacts elsewhere.
-function connectedParts(indices, neighbors) {
+//
+// Exported (2026-09-11 fix-round-2) solely so it can be unit-tested directly
+// against a hand-constructed disconnected index/neighbors pair — the full
+// seeding+Lloyd's-iteration pipeline proved strongly resistant to organically
+// producing a genuinely graph-disconnected cluster on synthetic test shapes
+// (two attempts tried and failed; see subdivider.test.js). Only
+// mergeBlocksToZones's signature and return shape are a frozen contract;
+// nothing requires this helper to stay unexported.
+export function connectedParts(indices, neighbors) {
   const set = new Set(indices);
   const seen = new Set();
   const parts = [];

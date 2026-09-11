@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as turf from '@turf/turf';
-import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2, isoperimetricQuotient } from '../../src/zones/subdivider.js';
+import { allocateZoneCounts, orderZonesForNumbering, paddedBbox, BOUNDARY_PAD_METERS, buildBlocks, HARD_HIGHWAYS, mergeBlocksToZones, generateZones, computeBlockEfforts, OPEN_GROUND_M_PER_M2, isoperimetricQuotient, connectedParts } from '../../src/zones/subdivider.js';
 
 describe('allocateZoneCounts', () => {
   it('splits proportionally by block count and sums exactly to the total', () => {
@@ -558,7 +558,7 @@ describe('mergeBlocksToZones — k-means region-forming: effort-weighted balanci
   });
 });
 
-describe('mergeBlocksToZones — k-means region-forming: non-contiguous cluster splitting', () => {
+describe('mergeBlocksToZones — k-means region-forming: branching-shape regression (Y-shape)', () => {
   // A "Y" shape: a hub block at the origin with three arms — a LONG east arm
   // (4 blocks, with a heavy weight on its far tip) and two short single-block
   // arms, one northwest and one southwest of the hub. The hub is the ONLY
@@ -571,18 +571,25 @@ describe('mergeBlocksToZones — k-means region-forming: non-contiguous cluster 
   // zoneCount. A prior hand-derived T-shape fixture (bar + 2-block stem) was
   // traced by hand and believed to disconnect, but running the real code
   // showed it always converges to a contiguous bar/stem split, for any tip
-  // weight up to 1,000,000 — the hand math had an error. Don't hand-derive
-  // k-means convergence again; verify empirically against the real code, as
-  // this fixture was (confirmed deterministic across 5 repeated runs at tip
-  // weights 50, 500, and 5000 alike).
+  // weight up to 1,000,000 — the hand math had an error.
   //
-  // What actually happens: with k=2, nearest-centroid assignment puts the
-  // hub + heavy-tipped east arm in one cluster, and the NW+SW arm blocks in
-  // the other (they're both far from the heavy east tip, so they cluster
-  // together by distance) — but the NW and SW blocks are NOT graph-adjacent
-  // to each other, only to the hub, which is in the OTHER cluster. That
-  // cluster is graph-disconnected, so the splitting step (connectedParts)
-  // breaks it into two singleton zones, for 3 zones total from a k=2 request.
+  // IMPORTANT — corrected 2026-09-11 (fix-round-2): this fixture does NOT
+  // exercise connectedParts. Instrumenting the real pipeline showed Lloyd's
+  // iteration converges to two clusters that are BOTH already
+  // graph-connected on their own — connectedParts never splits anything
+  // here. The observed zones.length === 3 instead comes from an entirely
+  // different, pre-existing mechanism: the two converged regions are
+  // unbalanced enough that runt absorption folds them into one region; that
+  // merged region's blocks touch each other at only a single corner point,
+  // so turf.union produces a MultiPolygon; and the file's PRE-EXISTING (not
+  // part of this task) multi-part sweep further down mergeBlocksToZones
+  // splits that MultiPolygon into 3 separate zones. So this test is still
+  // legitimate, valuable regression coverage — it proves k-means + runt
+  // absorption + the point-touch MultiPolygon sweep together still produce
+  // valid single-Polygon zones with conserved area for a real branching
+  // compartment shape — it just isn't proof that connectedParts fires. See
+  // the 'connectedParts — non-contiguous group splitting' describe block
+  // below for direct, isolated coverage of that logic.
   const SQ = (x, y) => turf.polygon([[[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]]]);
   const blocks = [
     SQ(0, 0),                                // 0: hub
@@ -598,9 +605,10 @@ describe('mergeBlocksToZones — k-means region-forming: non-contiguous cluster 
   ];
   const efforts = [1, 1, 1, 1, 50, 1, 1]; // block 4 (east arm tip) is the heavy pull
 
-  it('splits a cluster whose nearest-centroid assignment left it graph-disconnected', () => {
+  it('produces valid single-Polygon zones with conserved area for a branching compartment (via runt absorption + point-touch MultiPolygon sweep, not connectedParts)', () => {
     const zones = mergeBlocksToZones(blocks, adj, 2, { efforts });
-    // Requesting 2 clusters but getting a disconnected one forces a 3rd zone.
+    // Requesting 2 zones but getting a 3rd from the point-touch MultiPolygon
+    // sweep described above.
     expect(zones).toHaveLength(3);
     // Every returned zone must be a single contiguous Polygon (not a
     // MultiPolygon standing in for two disconnected pieces).
@@ -609,6 +617,38 @@ describe('mergeBlocksToZones — k-means region-forming: non-contiguous cluster 
     const total = blocks.reduce((s, b) => s + turf.area(b), 0);
     const covered = zones.reduce((s, z) => s + turf.area(z), 0);
     expect(covered / total).toBeCloseTo(1, 3);
+  });
+});
+
+describe('connectedParts — non-contiguous group splitting', () => {
+  // Direct, isolated unit coverage of the BFS-reachability splitting logic
+  // clusterCompartmentBlocks uses when a k-means cluster's members aren't
+  // all graph-adjacent. Added 2026-09-11 (fix-round-2): the Y-shape test
+  // above was believed to exercise this path but, per instrumentation of the
+  // real pipeline, does not — Lloyd's iteration on that fixture converges to
+  // two already-connected clusters. Two attempts at finding a fixture that
+  // organically drives connectedParts to split a cluster through the full
+  // seeding+Lloyd's-iteration pipeline failed; planar block-adjacency graphs
+  // combined with nearest-centroid Voronoi-style partitioning proved
+  // strongly resistant to producing genuine disconnection on synthetic
+  // grid/branching shapes. Per the spec's own Testing section ("a
+  // CONSTRUCTED case where nearest-centroid assignment WOULD group two
+  // non-touching blocks together"), this constructs the disconnected input
+  // directly instead.
+  it('splits a manually-constructed disconnected set of indices into its connected components', () => {
+    // Indices 0 and 1 are mutually reachable (an edge connects them); indices
+    // 2 and 3 are also mutually reachable; but NOTHING connects {0,1} to {2,3}.
+    const neighbors = [[1], [0], [3], [2]]; // 0<->1, 2<->3, no cross-links
+    const parts = connectedParts([0, 1, 2, 3], neighbors).map(p => [...p].sort((a, b) => a - b));
+    parts.sort((a, b) => a[0] - b[0]);
+    expect(parts).toEqual([[0, 1], [2, 3]]);
+  });
+
+  it('returns one component when everything is reachable', () => {
+    const neighbors = [[1], [0, 2], [1]];
+    const parts = connectedParts([0, 1, 2], neighbors);
+    expect(parts).toHaveLength(1);
+    expect([...parts[0]].sort((a, b) => a - b)).toEqual([0, 1, 2]);
   });
 });
 
