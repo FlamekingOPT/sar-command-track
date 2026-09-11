@@ -5,7 +5,8 @@ import { ZonePanel } from '../ui/ZonePanel';
 import { fetchStreets, selectDetail } from '../zones/overpass';
 import { allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering, computeBlockEfforts } from '../zones/subdivider';
 import { gridZones } from '../zones/grid';
-import { createZones, updateZoneStatus, watchZones, deleteZonesForBoundary } from '../firebase/zones';
+import { validateZonePolygon, zonesToGenerate } from '../zones/reshape';
+import { createZones, updateZoneStatus, updateZonePolygon, watchZones, deleteZonesForBoundary } from '../firebase/zones';
 import { updateSearchBoundaries, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
 
@@ -27,6 +28,8 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [copiedLink, setCopiedLink] = useState(false);
   const [searchCode, setSearchCode] = useState('');
   const [selectedZoneId, setSelectedZoneId] = useState(null);
+  const [zoneEditId, setZoneEditId] = useState(null);
+  const [zoneEditError, setZoneEditError] = useState('');
   const mapRef = useRef(null);
 
   function handleZoneClick(zone) {
@@ -34,7 +37,41 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
     mapRef.current?.flyToZone(zone);
   }
 
+  // The map hands back an id (layer features carry properties, not documents).
+  function handleZoneClickById(zoneId) {
+    if (zoneEditId) return; // clicks belong to Draw while reshaping
+    const zone = zones.find(z => z.id === zoneId);
+    if (zone) setSelectedZoneId(zone.id);
+  }
+
+  function handleToggleZoneEdit() {
+    setZoneEditError('');
+    setZoneEditId(current => (current ? null : selectedZoneId));
+  }
+
+  async function handleZoneReshaped({ id, geometry }) {
+    const result = validateZonePolygon(geometry);
+    if (!result.ok) {
+      // Leave Draw holding the bad shape so the user can keep dragging it back
+      // into something valid; nothing is written until it validates.
+      setZoneEditError(result.error);
+      return;
+    }
+    setZoneEditError('');
+    try {
+      await updateZonePolygon(searchId, DAY_ID, id, result.geometry);
+    } catch (err) {
+      console.error('handleZoneReshaped failed:', err);
+      setZoneEditError('Could not save the new shape — check your connection.');
+    }
+  }
+
   useEffect(() => watchZones(searchId, DAY_ID, setZones), [searchId]);
+
+  // Never leave a zone in Draw that the panel no longer points at.
+  useEffect(() => {
+    if (zoneEditId && zoneEditId !== selectedZoneId) setZoneEditId(null);
+  }, [selectedZoneId, zoneEditId]);
 
   useEffect(() => {
     const stopTracks = watchTracks(searchId, DAY_ID, setTracks);
@@ -118,7 +155,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         .map(b => ({ ...b, feature: { type: 'Feature', geometry: b.geometry, properties: {} } }))
         .filter(b => !zones.some(z => zoneBelongsTo(z, b.id)));
       if (!targets.length) { setGeneratingZones(false); return; }
-      const remaining = Math.max(1, zoneCount - zones.length);
+      const remaining = zonesToGenerate(zoneCount);
 
       // Fetch + polygonize per boundary — smaller queries, independent failures.
       // LOD needs a PRE-fetch estimate (block counts don't exist yet), so the
@@ -270,12 +307,29 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           </button>
         )}
 
+        {/* Reshape the selected zone by dragging its vertices. Only one zone at
+            a time — Draw holds that zone alone while the mode is on. */}
+        {!readOnly && selectedZoneId && (
+          <button
+            onClick={handleToggleZoneEdit}
+            style={{ background: zoneEditId ? '#f59e0b' : '#334155', padding: '4px 12px' }}>
+            {zoneEditId
+              ? '✓ Done reshaping'
+              : `✎ Reshape zone ${zones.find(z => z.id === selectedZoneId)?.number ?? ''}`}
+          </button>
+        )}
+        {zoneEditError && (
+          <span style={{ color: '#fca5a5', fontSize: 13 }}>{zoneEditError}</span>
+        )}
+
         {/* Step 2: zone count (command types the total; walked/driven suggester
             removed 2026-07-16 — it proposed absurd counts like 1031) */}
         {!readOnly && boundaries.length > 0
           && boundaries.some(b => !zones.some(z => zoneBelongsTo(z, b.id))) && (
           <>
-            <span style={{ fontSize: 13, opacity: 0.7 }}>Step 2: Zones</span>
+            <span style={{ fontSize: 13, opacity: 0.7 }}>
+              {zones.length ? 'Zones for new boundary' : 'Step 2: Zones'}
+            </span>
             <input
               type="number" min={1} value={zoneCount}
               onChange={e => setZoneCount(Math.max(1, Number(e.target.value)))}
@@ -336,6 +390,9 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           tracks={tracksWithStatus}
           liveMarkers={liveMarkers}
           selectedZoneId={selectedZoneId}
+          onZoneClick={handleZoneClickById}
+          zoneEditId={zoneEditId}
+          onZoneReshaped={handleZoneReshaped}
         />
         <ZonePanel
           zones={zones}

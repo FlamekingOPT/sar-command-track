@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], selectedZoneId = null }, ref) {
+export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped }, ref) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -28,11 +28,25 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
 
   const onBoundaryEditedRef = useRef(onBoundaryEdited);
   const onBoundaryDeletedRef = useRef(onBoundaryDeleted);
+  const onZoneClickRef = useRef(onZoneClick);
+  const onZoneReshapedRef = useRef(onZoneReshaped);
+  // draw.update fires from the same Draw instance for both a boundary and a
+  // zone being reshaped, and the handler is bound once on mount — it needs the
+  // CURRENT edit target to tell the two apart.
+  const zoneEditIdRef = useRef(zoneEditId);
+  // Read through a ref, not the prop, so the Draw-sync effect below does NOT
+  // re-run on every zones snapshot: each reshape write echoes back from
+  // Firestore, and re-seeding Draw mid-edit would drop the vertex selection.
+  const zonesRef = useRef(zones);
 
   useEffect(() => { drawModeRef.current = drawMode; }, [drawMode]);
   useEffect(() => { onFeatureDrawnRef.current = onFeatureDrawn; }, [onFeatureDrawn]);
   useEffect(() => { onBoundaryEditedRef.current = onBoundaryEdited; }, [onBoundaryEdited]);
   useEffect(() => { onBoundaryDeletedRef.current = onBoundaryDeleted; }, [onBoundaryDeleted]);
+  useEffect(() => { onZoneClickRef.current = onZoneClick; }, [onZoneClick]);
+  useEffect(() => { onZoneReshapedRef.current = onZoneReshaped; }, [onZoneReshaped]);
+  useEffect(() => { zoneEditIdRef.current = zoneEditId; }, [zoneEditId]);
+  useEffect(() => { zonesRef.current = zones; }, [zones]);
 
   useEffect(() => {
     const map = new mapboxgl.Map({
@@ -107,11 +121,29 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
       onFeatureDrawnRef.current?.(e.features[0]);
     });
     map.on('draw.update', e => {
-      for (const f of e.features) onBoundaryEditedRef.current?.({ id: String(f.id), geometry: f.geometry });
+      for (const f of e.features) {
+        const id = String(f.id);
+        // While a zone is being reshaped it is the only feature inside Draw,
+        // so anything else coming back is a boundary edit.
+        if (id === zoneEditIdRef.current) onZoneReshapedRef.current?.({ id, geometry: f.geometry });
+        else onBoundaryEditedRef.current?.({ id, geometry: f.geometry });
+      }
     });
     map.on('draw.delete', e => {
-      for (const f of e.features) onBoundaryDeletedRef.current?.(String(f.id));
+      for (const f of e.features) {
+        // Trash while reshaping would silently drop a numbered zone — Draw's
+        // copy is put back by the sync effect below.
+        if (String(f.id) === zoneEditIdRef.current) continue;
+        onBoundaryDeletedRef.current?.(String(f.id));
+      }
     });
+
+    map.on('click', 'zones-fill', e => {
+      const hit = e.features?.[0];
+      if (hit) onZoneClickRef.current?.(hit.properties.id);
+    });
+    map.on('mouseenter', 'zones-fill', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'zones-fill', () => { map.getCanvas().style.cursor = ''; });
 
     mapRef.current = map;
     drawRef.current = draw;
@@ -129,9 +161,9 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
 
   useEffect(() => {
     const draw = drawRef.current;
-    if (!draw) return;
+    if (!draw || zoneEditId) return; // reshaping owns Draw's mode
     draw.changeMode(drawMode === 'idle' ? 'simple_select' : 'draw_polygon');
-  }, [drawMode]);
+  }, [drawMode, zoneEditId]);
 
   // Boundaries live INSIDE Mapbox Draw while editable (giving click-to-select
   // and vertex editing for free); on completed searches they render read-only
@@ -143,7 +175,20 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
     const draw = drawRef.current;
     if (!map || !draw || !mapLoaded) return;
     const features = boundaries.map(b => ({ type: 'Feature', id: b.id, geometry: b.geometry, properties: {} }));
-    if (editable) {
+    const editingZone = zoneEditId ? zonesRef.current.find(z => z.id === zoneEditId) : null;
+    if (editingZone?.polygon) {
+      // Reshaping puts ONLY that zone in Draw: boundaries drop to the read-only
+      // source so a stray drag can't reshape the search area by accident, and
+      // draw.update stays unambiguous.
+      draw.set({
+        type: 'FeatureCollection',
+        features: [{ type: 'Feature', id: editingZone.id, geometry: editingZone.polygon, properties: {} }],
+      });
+      map.getSource('boundary')?.setData(turf.featureCollection(
+        boundaries.map(b => ({ type: 'Feature', geometry: b.geometry, properties: {} }))
+      ));
+      draw.changeMode('direct_select', { featureId: editingZone.id });
+    } else if (editable) {
       draw.set({ type: 'FeatureCollection', features });
       map.getSource('boundary')?.setData(turf.featureCollection([]));
     } else {
@@ -152,7 +197,7 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
         boundaries.map(b => ({ type: 'Feature', geometry: b.geometry, properties: {} }))
       ));
     }
-  }, [boundaries, editable, mapLoaded]);
+  }, [boundaries, editable, mapLoaded, zoneEditId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -170,6 +215,18 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
     if (!map || !mapLoaded) return;
     map.setFilter('zones-selected-line', ['==', ['get', 'id'], selectedZoneId ?? '']);
   }, [selectedZoneId, mapLoaded]);
+
+  // Draw draws its own copy of the zone under edit; without this the stale
+  // pre-drag polygon stays painted underneath the vertices.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded) return;
+    const hide = ['!=', ['get', 'id'], zoneEditId ?? ''];
+    for (const layer of ['zones-fill', 'zones-line', 'zones-labels']) map.setFilter(layer, hide);
+    map.setFilter('zones-selected-line', [
+      'all', hide, ['==', ['get', 'id'], selectedZoneId ?? ''],
+    ]);
+  }, [zoneEditId, selectedZoneId, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;

@@ -41,6 +41,15 @@ export async function deleteZonesForBoundary(searchId, dayId, boundaryId) {
   }
 }
 
+// Reshaping a zone touches only its own geometry — neighbours, numbering and
+// any searcher already assigned to it stay as they are. Stored as a JSON
+// string to match createZones (Firestore has no nested-array type).
+export async function updateZonePolygon(searchId, dayId, zoneId, polygon) {
+  await updateDoc(doc(db, 'searches', searchId, 'days', dayId, 'zones', zoneId), {
+    polygon: JSON.stringify(polygon),
+  });
+}
+
 export async function updateZoneStatus(searchId, dayId, zoneId, status) {
   await updateDoc(doc(db, 'searches', searchId, 'days', dayId, 'zones', zoneId), { status });
 }
