@@ -437,10 +437,10 @@ describe('computeBlockEfforts', () => {
   });
 });
 
-describe('mergeBlocksToZones with explicit efforts (street-length balancing)', () => {
+describe('mergeBlocksToZones — extreme weight skew on a 1-D chain (k-means trade-off)', () => {
   const SQX = x => turf.polygon([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]]);
 
-  it('balances zones by provided efforts, not by area', () => {
+  it('yields a positional 2-2 split rather than isolating the heavy block, unlike the old greedy-growth algorithm', () => {
     // 4 EQUAL-AREA blocks in a soft chain; block 0 holds 10x the street length
     // of any other single block. Under the OLD greedy-weight-target-growth
     // algorithm this isolated block 0 into its own zone (a clean 1-vs-3 split
@@ -452,6 +452,14 @@ describe('mergeBlocksToZones with explicit efforts (street-length balancing)', (
     // This is an accepted trade-off of the new algorithm for extreme (10x+)
     // weight skew on a near-1-D chain, not a bug — see docs/superpowers/specs/
     // 2026-07-23-zone-growth-redesign-design.md and the plan's ledger.
+    //
+    // NOTE: this fixture no longer distinguishes "with efforts" from "without"
+    // — skewed efforts, uniform efforts, and no efforts option at all all
+    // converge to the same [2,2] split for THIS specific shape (verified).
+    // Real efforts-change-the-outcome coverage lives in the
+    // 'k-means region-forming: effort-weighted balancing' describe block
+    // below, which uses a shape where the effort-weighted centroid pull
+    // actually flips the partition.
     const blocks = [SQX(0), SQX(1), SQX(2), SQX(3)];
     const adj = [0, 1, 2].map(i => ({ a: i, b: i + 1, hard: false }));
     const zones = mergeBlocksToZones(blocks, adj, 2, { efforts: [30_000, 3_000, 3_000, 3_000] });
@@ -649,6 +657,18 @@ describe('connectedParts — non-contiguous group splitting', () => {
     const parts = connectedParts([0, 1, 2], neighbors);
     expect(parts).toHaveLength(1);
     expect([...parts[0]].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+  });
+
+  it('does not let a BFS walk outside the tested index set via a neighbor that belongs to another group', () => {
+    // Block 2 is a real neighbor of both 1 and 3 in the full graph, but is NOT
+    // part of the group being split ([0,1,3]) — it belongs to some other
+    // cluster. The containment guard (set.has(nb)) must stop the BFS from
+    // walking through it, or [0,1] and [3] would incorrectly merge into one
+    // component via the "back door" of block 2's real adjacency.
+    const neighbors = [[1], [0, 2], [1, 3], [2]];
+    const parts = connectedParts([0, 1, 3], neighbors).map(p => [...p].sort((a, b) => a - b));
+    parts.sort((a, b) => a[0] - b[0]);
+    expect(parts).toEqual([[0, 1], [3]]);
   });
 });
 

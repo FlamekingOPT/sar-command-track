@@ -149,9 +149,12 @@ const BOUNDARY_ROAD_MATCH_TOLERANCE_M = 15;
 // lands on a real, sizeable road reads better to command than one that cuts
 // through the middle of an ordinary block. secondary/tertiary score highest;
 // residential/living_street/unclassified score low; no nearby road scores 0.
-// Hard classes aren't listed here — a hard-adjacent border is scored by the
-// separate hard-road-crossing penalty in refineZoneBoundaries (Task 6), not
-// this table.
+// Hard classes aren't listed here — a hard-adjacent border was scored by the
+// separate hard-road-crossing penalty in the old refineZoneBoundaries, now
+// removed (2026-09-10 redesign), not this table. There is currently no live
+// consumer of this table; it's kept because the field it depends on
+// (`roadClass`) is still populated and harmless to leave — it may feed a
+// future "snap a boundary to a named road" feature.
 export const ROAD_CLASS_QUALITY = {
   secondary: 1.0,
   tertiary: 0.7,
@@ -196,8 +199,11 @@ function sharedAdjacency(polyA, polyB, hardLines, softLines = []) {
 }
 
 // Isoperimetric quotient: 1.0 for a circle, lower for elongated/notched
-// shapes. Used by refineZoneBoundaries (2026-07-19 spec, Part B, Task 6) to
-// score whether a candidate move makes a zone's shape rounder or worse.
+// shapes. Was used by refineZoneBoundaries (2026-07-19 spec, Part B, Task 6)
+// to score whether a candidate move made a zone's shape rounder or worse;
+// that function was removed in the 2026-09-10 k-means redesign. Stays
+// exported — still useful for reporting/comparing shape quality even
+// without a live scoring pass consuming it.
 export function isoperimetricQuotient(poly) {
   const area = turf.area(poly);
   let perimM;
