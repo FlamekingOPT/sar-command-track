@@ -249,8 +249,9 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           </span>
         )}
 
-        {/* Step 1: draw one or more boundaries */}
-        {searchStatus === 'setup' && (
+        {/* Step 1: draw one or more boundaries — stays available once active so
+            command can extend a live search, not just during initial setup */}
+        {!readOnly && (
           <button
             onClick={() => setDrawMode(m => m === 'boundary' ? 'idle' : 'boundary')}
             style={{ background: drawMode === 'boundary' ? '#f59e0b' : '#334155', padding: '4px 12px' }}>
@@ -262,7 +263,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
 
         {/* Step 2: zone count (command types the total; walked/driven suggester
             removed 2026-07-16 — it proposed absurd counts like 1031) */}
-        {searchStatus === 'setup' && boundaries.length > 0
+        {!readOnly && boundaries.length > 0
           && boundaries.some(b => !zones.some(z => zoneBelongsTo(z, b.id))) && (
           <>
             <span style={{ fontSize: 13, opacity: 0.7 }}>Step 2: Zones</span>

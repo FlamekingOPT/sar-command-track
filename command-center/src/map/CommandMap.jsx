@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
+import MapboxGeocoder from '@mapbox/mapbox-gl-geocoder';
 import * as turf from '@turf/turf';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
+import '@mapbox/mapbox-gl-geocoder/dist/mapbox-gl-geocoder.css';
 
 mapboxgl.accessToken = import.meta.env.VITE_MAPBOX_TOKEN;
 
@@ -42,6 +44,12 @@ export function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable
     const draw = new MapboxDraw({ displayControlsDefault: false, controls: { polygon: true, trash: true } });
     map.addControl(draw);
     map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+    map.addControl(new MapboxGeocoder({
+      accessToken: mapboxgl.accessToken,
+      mapboxgl,
+      marker: true,
+      placeholder: 'Search address...',
+    }), 'top-left');
 
     map.on('load', () => {
       map.addSource('boundary', { type: 'geojson', data: turf.featureCollection([]) });
