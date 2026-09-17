@@ -189,8 +189,14 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
 
     // Plain map click (not tied to a layer) so dropping a pin works anywhere,
     // including empty water/unmapped areas that have no zones-fill feature.
+    // Boundary drawing and zone reshaping both put Mapbox Draw in an active
+    // editing mode — a pin-drop click landing on top of that would silently
+    // fight Draw for the same click (losing a boundary vertex, or dropping a
+    // pin mid-drag) instead of doing either cleanly, so pin-drop mode defers
+    // to whichever of those is active.
     map.on('click', e => {
       if (!pinDropModeRef.current) return;
+      if (drawModeRef.current !== 'idle' || zoneEditIdRef.current) return;
       onPinDropRef.current?.({ lat: e.lngLat.lat, lng: e.lngLat.lng });
     });
 

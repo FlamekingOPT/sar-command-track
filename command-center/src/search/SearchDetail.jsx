@@ -95,6 +95,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   }
 
   async function handleSavePin(note) {
+    if (readOnly) return;
     const location = pendingPinLocation;
     setPendingPinLocation(null);
     setPinDropMode(false);
@@ -106,6 +107,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   }
 
   async function handlePinClick({ id, note }) {
+    if (readOnly) return;
     if (!window.confirm(`Delete this pin?${note ? ` (${note})` : ''}`)) return;
     try {
       await deletePin(searchId, DAY_ID, id);
