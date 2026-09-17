@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
+import { PinForm } from '../ui/PinForm';
 import { fetchStreets, selectDetail } from '../zones/overpass';
 import { allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering, computeBlockEfforts } from '../zones/subdivider';
 import { gridZones } from '../zones/grid';
@@ -9,6 +10,7 @@ import { validateZonePolygon, zonesToGenerate } from '../zones/reshape';
 import { createZones, updateZoneStatus, updateZonePolygon, watchZones, deleteZonesForBoundary } from '../firebase/zones';
 import { updateSearchBoundaries, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
+import { createPin, deletePin, watchPins } from '../firebase/pins';
 
 const DAY_ID = 'day-1';
 
@@ -30,6 +32,9 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [selectedZoneId, setSelectedZoneId] = useState(null);
   const [zoneEditId, setZoneEditId] = useState(null);
   const [zoneEditError, setZoneEditError] = useState('');
+  const [pins, setPins] = useState([]);
+  const [pinDropMode, setPinDropMode] = useState(false);
+  const [pendingPinLocation, setPendingPinLocation] = useState(null);
   const mapRef = useRef(null);
 
   function handleZoneClick(zone) {
@@ -76,8 +81,40 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   useEffect(() => {
     const stopTracks = watchTracks(searchId, DAY_ID, setTracks);
     const stopMarkers = watchMarkers(searchId, DAY_ID, setLiveMarkers);
-    return () => { stopTracks(); stopMarkers(); };
+    const stopPins = watchPins(searchId, DAY_ID, setPins);
+    return () => { stopTracks(); stopMarkers(); stopPins(); };
   }, [searchId]);
+
+  function handleTogglePinDrop() {
+    setPendingPinLocation(null);
+    setPinDropMode(m => !m);
+  }
+
+  function handlePinDrop(location) {
+    setPendingPinLocation(location);
+  }
+
+  async function handleSavePin(note) {
+    if (readOnly) return;
+    const location = pendingPinLocation;
+    setPendingPinLocation(null);
+    setPinDropMode(false);
+    try {
+      await createPin(searchId, DAY_ID, { ...location, note });
+    } catch (err) {
+      console.error('handleSavePin failed:', err);
+    }
+  }
+
+  async function handlePinClick({ id, note }) {
+    if (readOnly) return;
+    if (!window.confirm(`Delete this pin?${note ? ` (${note})` : ''}`)) return;
+    try {
+      await deletePin(searchId, DAY_ID, id);
+    } catch (err) {
+      console.error('handlePinClick failed:', err);
+    }
+  }
 
   useEffect(() => {
     return watchSearch(searchId, search => {
@@ -322,6 +359,15 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           <span style={{ color: '#fca5a5', fontSize: 13 }}>{zoneEditError}</span>
         )}
 
+        {/* Drop a pin with a note anywhere on the map — visible to searchers. */}
+        {!readOnly && (
+          <button
+            onClick={handleTogglePinDrop}
+            style={{ background: pinDropMode ? '#7c3aed' : '#334155', padding: '4px 12px' }}>
+            {pinDropMode ? '📌 Click map to drop pin…' : '📌 Drop Pin'}
+          </button>
+        )}
+
         {/* Step 2: zone count (command types the total; walked/driven suggester
             removed 2026-07-16 — it proposed absurd counts like 1031) */}
         {!readOnly && boundaries.length > 0
@@ -378,23 +424,36 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         <button onClick={onLogout} style={{ background: '#334155', padding: '4px 12px' }}>Sign Out</button>
       </div>
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        <CommandMap
-          ref={mapRef}
-          drawMode={readOnly ? 'idle' : drawMode}
-          onFeatureDrawn={handleFeatureDrawn}
-          boundaries={boundaries}
-          editable={!readOnly}
-          onBoundaryEdited={handleBoundaryEdited}
-          onBoundaryDeleted={handleBoundaryDeleted}
-          zones={zones}
-          tracks={tracksWithStatus}
-          liveMarkers={liveMarkers}
-          volunteers={volunteers}
-          selectedZoneId={selectedZoneId}
-          onZoneClick={handleZoneClickById}
-          zoneEditId={zoneEditId}
-          onZoneReshaped={handleZoneReshaped}
-        />
+        <div style={{ position: 'relative', flex: 1, height: '100%' }}>
+          <CommandMap
+            ref={mapRef}
+            drawMode={readOnly ? 'idle' : drawMode}
+            onFeatureDrawn={handleFeatureDrawn}
+            boundaries={boundaries}
+            editable={!readOnly}
+            onBoundaryEdited={handleBoundaryEdited}
+            onBoundaryDeleted={handleBoundaryDeleted}
+            zones={zones}
+            tracks={tracksWithStatus}
+            liveMarkers={liveMarkers}
+            volunteers={volunteers}
+            selectedZoneId={selectedZoneId}
+            onZoneClick={handleZoneClickById}
+            zoneEditId={zoneEditId}
+            onZoneReshaped={handleZoneReshaped}
+            pins={pins}
+            pinDropMode={pinDropMode}
+            onPinDrop={handlePinDrop}
+            onPinClick={handlePinClick}
+          />
+          {pendingPinLocation && (
+            <PinForm
+              location={pendingPinLocation}
+              onSave={handleSavePin}
+              onCancel={() => setPendingPinLocation(null)}
+            />
+          )}
+        </div>
         <ZonePanel
           zones={zones}
           volunteers={volunteers}

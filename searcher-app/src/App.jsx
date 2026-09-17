@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { parseToken } from './firebase/token';
 import { resolveLink } from './firebase/links';
 import { getZone, watchZone } from './firebase/zones';
+import { watchPins } from './firebase/pins';
 import { enqueue, linkKeyOf } from './gps/offlineQueue';
 import { startSync, flushOnce } from './gps/sync';
 import { useGpsTracking } from './gps/useGpsTracking';
@@ -28,6 +29,7 @@ export default function App() {
   const [zone, setZone] = useState(null);
   const [pinLocation, setPinLocation] = useState(null);
   const [localMarkers, setLocalMarkers] = useState([]);
+  const [commandPins, setCommandPins] = useState([]);
   const startedRef = useRef(false);
 
   const linkKey = linkKeyOf(link);
@@ -60,11 +62,12 @@ export default function App() {
     if (state !== 'ready' || !link) return;
     const stopWatch = watchZone(link, setZone);
     const stopSync = startSync(link);
+    const stopPins = watchPins(link.searchId, link.dayId, setCommandPins);
     if (!startedRef.current) {
       startedRef.current = true;
       if (zone?.status === 'assigned') enqueue('status', { status: 'in_progress' }, linkKey);
     }
-    return () => { stopWatch(); stopSync(); };
+    return () => { stopWatch(); stopSync(); stopPins(); };
   }, [state, link]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (state === 'loading') return <Message>Loading your zone…</Message>;
@@ -92,6 +95,7 @@ export default function App() {
         zonePolygon={zone.polygon}
         points={points}
         markers={localMarkers}
+        commandPins={commandPins}
         onMapTap={setPinLocation}
       />
 
