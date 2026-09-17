@@ -71,6 +71,20 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
       placeholder: 'Search address...',
     }), 'top-left');
 
+    // Generic medical/EMS marker (white cross on red, not the literal
+    // protected Red Cross emblem which is reversed — red cross on white).
+    // Mapbox GL's symbol text-field only renders glyphs from its own hosted
+    // glyph ranges, which don't cover color emoji, so a plain '🚑' text-field
+    // silently renders nothing — an actual icon image is the only reliable way.
+    const EMS_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48">'
+      + '<circle cx="24" cy="24" r="22" fill="#dc2626" stroke="#ffffff" stroke-width="3"/>'
+      + '<rect x="20" y="10" width="8" height="28" rx="2" fill="#ffffff"/>'
+      + '<rect x="10" y="20" width="28" height="8" rx="2" fill="#ffffff"/>'
+      + '</svg>';
+    const emsIcon = new Image(48, 48);
+    emsIcon.onload = () => { if (!map.hasImage('ems-icon')) map.addImage('ems-icon', emsIcon); };
+    emsIcon.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(EMS_ICON_SVG)}`;
+
     map.on('load', () => {
       map.addSource('boundary', { type: 'geojson', data: turf.featureCollection([]) });
       map.addLayer({ id: 'boundary-fill', type: 'fill', source: 'boundary',
@@ -141,6 +155,28 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
           'text-offset': [0, 0.8],
         },
         paint: { 'text-color': '#5b21b6', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
+
+      // The search's command base — one point, always visible over everything
+      // else on the map (it's the one landmark that never gets buried under
+      // zones/tracks).
+      map.addSource('command-base', { type: 'geojson', data: turf.featureCollection([]) });
+      map.addLayer({ id: 'command-base-icon', type: 'symbol', source: 'command-base',
+        layout: {
+          'icon-image': 'ems-icon',
+          'icon-size': 0.85,
+          'icon-allow-overlap': true,
+          'icon-anchor': 'center',
+        } });
+      map.addLayer({ id: 'command-base-label', type: 'symbol', source: 'command-base',
+        layout: {
+          'text-field': ['get', 'address'],
+          'text-size': 12,
+          'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Regular'],
+          'text-anchor': 'top',
+          'text-offset': [0, 1.1],
+          'text-allow-overlap': true,
+        },
+        paint: { 'text-color': '#991b1b', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 } });
 
       setMapLoaded(true); // sources + layers now exist — let the data effects push
     });
@@ -316,6 +352,15 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
       turf.featureCollection(pins.map(p => turf.point([p.lng, p.lat], { id: p.id, note: p.note ?? '' })))
     );
   }, [pins, mapLoaded]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded) return;
+    const valid = typeof commandBase?.lat === 'number' && typeof commandBase?.lng === 'number';
+    map.getSource('command-base')?.setData(turf.featureCollection(
+      valid ? [turf.point([commandBase.lng, commandBase.lat], { address: commandBase.address ?? '' })] : []
+    ));
+  }, [commandBase, mapLoaded]);
 
   useEffect(() => {
     const map = mapRef.current;

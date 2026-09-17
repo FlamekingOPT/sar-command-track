@@ -37,24 +37,31 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [pendingPinLocation, setPendingPinLocation] = useState(null);
   const [commandBase, setCommandBase] = useState(null);
   const [commandBaseError, setCommandBaseError] = useState('');
+  const [editingCommandBase, setEditingCommandBase] = useState(false);
+  const [commandBaseInput, setCommandBaseInput] = useState('');
+  const [savingCommandBase, setSavingCommandBase] = useState(false);
   const mapRef = useRef(null);
 
-  async function handleSetCommandBase() {
+  function handleOpenCommandBaseEditor() {
     if (readOnly) return;
-    const address = window.prompt('Command base address:', commandBase?.address ?? '');
-    if (address === null) return; // cancelled
-    if (!address.trim()) {
-      setCommandBaseError('');
-      await updateSearchCommandBase(searchId, null);
-      return;
-    }
+    setCommandBaseInput(commandBase?.address ?? '');
+    setCommandBaseError('');
+    setEditingCommandBase(true);
+  }
+
+  async function handleSaveCommandBase() {
+    const address = commandBaseInput.trim();
+    setSavingCommandBase(true);
     try {
       setCommandBaseError('');
-      const base = await geocodeAddress(address.trim());
+      const base = address ? await geocodeAddress(address) : null;
       await updateSearchCommandBase(searchId, base);
+      setEditingCommandBase(false);
     } catch (err) {
-      console.error('handleSetCommandBase failed:', err);
+      console.error('handleSaveCommandBase failed:', err);
       setCommandBaseError(err.message ?? 'Could not find that address.');
+    } finally {
+      setSavingCommandBase(false);
     }
   }
 
@@ -329,10 +336,31 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
 
         {/* A search's home base — the map auto-flies here once when the
             search is opened, so command doesn't start zoomed out to the LA
-            basin default. */}
-        {!readOnly && (
-          <button onClick={handleSetCommandBase} style={{ background: '#334155', padding: '4px 12px' }}>
-            🏠 {commandBase ? 'Command Base' : 'Set Command Base'}
+            basin default. Inline field, not window.prompt: a native prompt()
+            dialog turned out to be easy to miss/inaccessible in some
+            environments (field feedback 2026-09-17). */}
+        {!readOnly && editingCommandBase && (
+          <>
+            <input
+              value={commandBaseInput}
+              onChange={e => setCommandBaseInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleSaveCommandBase(); if (e.key === 'Escape') setEditingCommandBase(false); }}
+              placeholder="Command base address"
+              autoFocus
+              style={{ width: 220, padding: '3px 6px', background: '#334155', border: 'none', color: '#f8fafc', borderRadius: 4 }} />
+            <button onClick={handleSaveCommandBase} disabled={savingCommandBase}
+              style={{ background: '#3b82f6', padding: '4px 12px', fontWeight: 600 }}>
+              {savingCommandBase ? 'Saving…' : 'Save'}
+            </button>
+            <button onClick={() => setEditingCommandBase(false)} style={{ background: '#334155', padding: '4px 12px' }}>
+              Cancel
+            </button>
+          </>
+        )}
+        {!readOnly && !editingCommandBase && (
+          <button onClick={handleOpenCommandBaseEditor} title={commandBase?.address}
+            style={{ background: '#334155', padding: '4px 12px', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            🏠 {commandBase ? commandBase.address : 'Set Command Base'}
           </button>
         )}
         {commandBaseError && (
