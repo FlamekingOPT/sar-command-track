@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped, pins = [], pinDropMode = false, onPinDrop, onPinClick }, ref) {
+export const CommandMap = forwardRef(function CommandMap({ commandBase = null, drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped, pins = [], pinDropMode = false, onPinDrop, onPinClick }, ref) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -322,6 +322,19 @@ export const CommandMap = forwardRef(function CommandMap({ drawMode, onFeatureDr
     if (!map) return;
     map.getCanvas().style.cursor = pinDropMode ? 'crosshair' : '';
   }, [pinDropMode]);
+
+  // Auto-navigate to the search's command base once when it's first opened —
+  // NOT on every commandBase prop change, or setting/editing the base later
+  // (or any other search-doc snapshot re-delivering the same value) would
+  // yank the view out from under command mid-work.
+  const flownToCommandBaseRef = useRef(false);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapLoaded || flownToCommandBaseRef.current) return;
+    if (typeof commandBase?.lat !== 'number' || typeof commandBase?.lng !== 'number') return;
+    flownToCommandBaseRef.current = true;
+    map.flyTo({ center: [commandBase.lng, commandBase.lat], zoom: 13, duration: 1200 });
+  }, [commandBase, mapLoaded]);
 
   return <div ref={containerRef} style={{ flex: 1, height: '100%' }} />;
 });

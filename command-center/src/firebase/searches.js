@@ -5,16 +5,20 @@ import { parseBoundaries } from '../search/boundaries';
 
 const DAY_ID = 'day-1';
 
-export async function createSearch({ name, date }) {
+export async function createSearch({ name, date, commandBase = null }) {
   const ref = await addDoc(collection(db, 'searches'), {
     name, date, status: 'setup', createdAt: serverTimestamp(), boundaries: null,
-    code: generateSearchCode(),
+    code: generateSearchCode(), commandBase,
   });
   return { id: ref.id };
 }
 
 export async function updateSearchBoundaries(searchId, boundaries) {
   await updateDoc(doc(db, 'searches', searchId), { boundaries: JSON.stringify(boundaries) });
+}
+
+export async function updateSearchCommandBase(searchId, commandBase) {
+  await updateDoc(doc(db, 'searches', searchId), { commandBase });
 }
 
 export async function publishSearch(searchId) {

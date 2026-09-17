@@ -64,8 +64,8 @@ describe('paddedBbox', () => {
 // padded area without reaching its edge can never close a face.
 const GRID_BOUNDARY = turf.polygon([[[0, 0], [0.003, 0], [0.003, 0.003], [0, 0.003], [0, 0]]]);
 const HARD_VERTICAL = [
-  turf.lineString([[0.0015, -0.01], [0.0015, 0.0015]]),
-  turf.lineString([[0.0015, 0.0015], [0.0015, 0.013]]),
+  turf.lineString([[0.0015, -0.01], [0.0015, 0.0015]], { highway: 'motorway' }),
+  turf.lineString([[0.0015, 0.0015], [0.0015, 0.013]], { highway: 'motorway' }),
 ];
 const SOFT_HORIZONTAL = [
   turf.lineString([[-0.01, 0.0015], [0.0015, 0.0015]]),

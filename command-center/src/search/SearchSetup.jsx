@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { createSearch } from '../firebase/searches';
+import { geocodeAddress } from '../map/geocode';
 
 export function SearchSetup({ onSearchCreated }) {
   const [name, setName] = useState('');
   const [date, setDate] = useState('');
+  const [commandBaseAddress, setCommandBaseAddress] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -12,7 +14,11 @@ export function SearchSetup({ onSearchCreated }) {
     setError(null);
     setLoading(true);
     try {
-      const { id } = await createSearch({ name, date });
+      let commandBase = null;
+      if (commandBaseAddress.trim()) {
+        commandBase = await geocodeAddress(commandBaseAddress.trim());
+      }
+      const { id } = await createSearch({ name, date, commandBase });
       onSearchCreated(id);
     } catch (err) {
       console.error('createSearch failed:', err);
@@ -28,6 +34,8 @@ export function SearchSetup({ onSearchCreated }) {
         <input value={name} onChange={e => setName(e.target.value)}
           placeholder="Search name (e.g. Mt Wilson 2026-06-28)" required autoFocus />
         <input type="date" value={date} onChange={e => setDate(e.target.value)} required />
+        <input value={commandBaseAddress} onChange={e => setCommandBaseAddress(e.target.value)}
+          placeholder="Command base address (optional) — map centers here" />
         {error && <p style={{ color: '#ef4444', margin: 0 }}>{error}</p>}
         <button type="submit" disabled={loading}>{loading ? 'Creating…' : 'Create Search'}</button>
       </form>

@@ -3,14 +3,14 @@ import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
 import { PinForm } from '../ui/PinForm';
-import { fetchStreets, selectDetail } from '../zones/overpass';
-import { allocateZoneCounts, buildBlocks, mergeBlocksToZones, orderZonesForNumbering, computeBlockEfforts } from '../zones/subdivider';
+import { allocateZoneCounts, orderZonesForNumbering } from '../zones/subdivider';
 import { gridZones } from '../zones/grid';
 import { validateZonePolygon, zonesToGenerate } from '../zones/reshape';
 import { createZones, updateZoneStatus, updateZonePolygon, watchZones, deleteZonesForBoundary } from '../firebase/zones';
-import { updateSearchBoundaries, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
+import { updateSearchBoundaries, updateSearchCommandBase, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
 import { createPin, deletePin, watchPins } from '../firebase/pins';
+import { geocodeAddress } from '../map/geocode';
 
 const DAY_ID = 'day-1';
 
@@ -35,7 +35,28 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [pins, setPins] = useState([]);
   const [pinDropMode, setPinDropMode] = useState(false);
   const [pendingPinLocation, setPendingPinLocation] = useState(null);
+  const [commandBase, setCommandBase] = useState(null);
+  const [commandBaseError, setCommandBaseError] = useState('');
   const mapRef = useRef(null);
+
+  async function handleSetCommandBase() {
+    if (readOnly) return;
+    const address = window.prompt('Command base address:', commandBase?.address ?? '');
+    if (address === null) return; // cancelled
+    if (!address.trim()) {
+      setCommandBaseError('');
+      await updateSearchCommandBase(searchId, null);
+      return;
+    }
+    try {
+      setCommandBaseError('');
+      const base = await geocodeAddress(address.trim());
+      await updateSearchCommandBase(searchId, base);
+    } catch (err) {
+      console.error('handleSetCommandBase failed:', err);
+      setCommandBaseError(err.message ?? 'Could not find that address.');
+    }
+  }
 
   function handleZoneClick(zone) {
     setSelectedZoneId(zone.id);
@@ -122,6 +143,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       if (search.code) setSearchCode(search.code);
       if (search.status) setSearchStatus(search.status);
       setBoundaries(search.boundaries ?? []);
+      setCommandBase(search.commandBase ?? null);
     });
   }, [searchId]);
 
@@ -194,80 +216,17 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
       if (!targets.length) { setGeneratingZones(false); return; }
       const remaining = zonesToGenerate(zoneCount);
 
-      // Fetch + polygonize per boundary — smaller queries, independent failures.
-      // LOD needs a PRE-fetch estimate (block counts don't exist yet), so the
-      // estimate splits `remaining` by area; the real allocation below uses
-      // actual block counts (spec §3).
-      const totalTargetArea = targets.reduce((s, t) => s + turf.area(t.feature), 0);
-      const built = [];   // boundaries with street data
-      const gridded = []; // boundaries that fell back to grid zones
+      // No street data, no rules — a plain even grid clipped to each
+      // boundary, split by AREA share across boundaries (2026-09-17: dropped
+      // the street/hard-barrier logic entirely per command's call; zone
+      // quality is being tackled separately).
       const notices = [];
-      for (let i = 0; i < targets.length; i++) {
-        const t = targets[i];
-        const areaM2 = turf.area(t.feature);
-        const estAlloc = Math.max(1, Math.round(remaining * areaM2 / totalTargetArea));
-        const label = targets.length > 1 ? ` (boundary ${i + 1} of ${targets.length})` : '';
-        try {
-          setGeneratingStatus(`Fetching map data…${label}`);
-          const { hardLines, softLines, allStreetLines, terrainPolygons, terrainPaths } = await fetchStreets(t.feature, {
-            detail: selectDetail(areaM2, estAlloc),
-            onProgress: (done, total) => {
-              if (total > 1) setGeneratingStatus(`Fetching map data…${label} tile ${Math.min(done + 1, total)}/${total}`);
-            },
-          });
-          setGeneratingStatus(`Building blocks…${label}`);
-          // The "implausibly big block" artifact filter must scale with zone
-          // size: at coarse LOD, real blocks between major roads are km-scale.
-          // 4× the expected zone area keeps every legitimate block while still
-          // dropping polygonize leaks.
-          const maxBlockAreaM2 = Math.max(200_000, (areaM2 / estAlloc) * 4);
-          const { blocks, adjacency } = buildBlocks(t.feature, hardLines, softLines, {
-            maxBlockAreaM2,
-            // blocks holding more than one zone's share of streets get locally
-            // re-polygonized at full detail so dense areas can split
-            refineStreets: allStreetLines,
-            targetZoneCount: estAlloc,
-            terrainPolygons,
-            terrainPaths,
-          });
-          // real workload per block: full-detail street meters (+ open-ground
-          // allowance) — zones balance search effort, not a block-size proxy
-          const efforts = computeBlockEfforts(blocks, allStreetLines);
-          built.push({ ...t, blocks, adjacency, efforts });
-        } catch (err) {
-          // Street data unavailable (no cache tile, live Overpass down) —
-          // degrade to grid zones so generation NEVER produces nothing.
-          console.error(`street data unavailable for boundary ${t.id}, using grid zones:`, err);
-          gridded.push({ ...t, polys: gridZones(t.feature, estAlloc) });
-          notices.push(`Boundary ${i + 1}: street data unavailable — used grid zones.`);
-        }
-      }
-
-      setGeneratingStatus('Generating zones…');
+      const alloc = allocateZoneCounts(remaining, targets.map(t => turf.area(t.feature)));
       const all = []; // { poly, boundaryId } across every target boundary
-      const gridCount = gridded.reduce((s, g) => s + g.polys.length, 0);
-      if (built.length) {
-        // split the total by each boundary's total EFFORT (street meters), so a
-        // dense boundary gets proportionally more zones than an open one
-        const alloc = allocateZoneCounts(
-          Math.max(1, remaining - gridCount),
-          built.map(b => Math.max(1, b.efforts.reduce((s, e) => s + e, 0))),
-        );
-        const noStreets = [];
-        built.forEach((b, i) => {
-          // clamp: a zone is never smaller than one block (spec §1)
-          const clamped = Math.min(alloc[i], Math.max(1, b.blocks.length));
-          const polys = b.blocks.length ? mergeBlocksToZones(b.blocks, b.adjacency, clamped, { efforts: b.efforts }) : [b.feature];
-          if (!b.blocks.length) noStreets.push(b.id);
-          for (const p of polys) all.push({ poly: p, boundaryId: b.id });
-        });
-        if (noStreets.length) {
-          notices.push(`${noStreets.length} boundar${noStreets.length === 1 ? 'y' : 'ies'} had no mapped streets — each became a single zone.`);
-        }
-      }
-      for (const g of gridded) {
-        for (const p of g.polys) all.push({ poly: p, boundaryId: g.id });
-      }
+      targets.forEach((t, i) => {
+        const polys = gridZones(t.feature, alloc[i]);
+        for (const p of polys) all.push({ poly: p, boundaryId: t.id });
+      });
 
       if (all.length) {
         // Numbering reads like a page ACROSS all boundaries: north rows first,
@@ -283,7 +242,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         setGeneratingStatus(`Saving ${toCreate.length} zones…`);
         await createZones(searchId, DAY_ID, toCreate);
         if (toCreate.length !== remaining && !notices.length) {
-          notices.push(`Generated ${toCreate.length} zones (requested ${remaining} — limited by available blocks or hard-road divides).`);
+          notices.push(`Generated ${toCreate.length} zones (requested ${remaining}).`);
         }
       }
       if (notices.length) setGenerateNotice(notices.join(' '));
@@ -368,6 +327,18 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           </button>
         )}
 
+        {/* A search's home base — the map auto-flies here once when the
+            search is opened, so command doesn't start zoomed out to the LA
+            basin default. */}
+        {!readOnly && (
+          <button onClick={handleSetCommandBase} style={{ background: '#334155', padding: '4px 12px' }}>
+            🏠 {commandBase ? 'Command Base' : 'Set Command Base'}
+          </button>
+        )}
+        {commandBaseError && (
+          <span style={{ color: '#fca5a5', fontSize: 13 }}>{commandBaseError}</span>
+        )}
+
         {/* Step 2: zone count (command types the total; walked/driven suggester
             removed 2026-07-16 — it proposed absurd counts like 1031) */}
         {!readOnly && boundaries.length > 0
@@ -427,6 +398,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         <div style={{ position: 'relative', flex: 1, height: '100%' }}>
           <CommandMap
             ref={mapRef}
+            commandBase={commandBase}
             drawMode={readOnly ? 'idle' : drawMode}
             onFeatureDrawn={handleFeatureDrawn}
             boundaries={boundaries}
