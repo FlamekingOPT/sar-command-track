@@ -510,7 +510,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
                 borderBottom: '1px solid #e5e7eb', borderRadius: '10px 10px 0 0',
               }}>
                 <strong style={{ flex: 1, fontSize: 14 }}>🐛 Report Issue</strong>
-                <button onClick={() => setShowFeedback(false)} style={{ background: 'transparent', padding: '2px 6px', fontSize: 16 }}>✕</button>
+                <button onClick={() => setShowFeedback(false)} style={{ background: 'transparent', color: '#111827', padding: '2px 6px', fontSize: 16 }}>✕</button>
               </div>
               <div style={{ padding: 12 }}>
                 <FeedbackForm

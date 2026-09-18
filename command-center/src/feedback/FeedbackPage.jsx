@@ -31,7 +31,7 @@ export function FeedbackPage({ onBack, onLogout }) {
     // report overlay's close button earlier tonight).
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 24px', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }}>
-        <button onClick={onBack} style={{ background: 'transparent', padding: '4px 8px' }}>← Back</button>
+        <button onClick={onBack} style={{ background: 'transparent', color: '#111827', padding: '4px 8px' }}>← Back</button>
         <h1 style={{ margin: 0, fontSize: 22 }}>🐛 Tester Feedback</h1>
         <span style={{ flex: 1 }} />
         <button onClick={onLogout} style={{ background: '#334155', color: '#fff', padding: '8px 16px' }}>Sign Out</button>
