@@ -44,6 +44,13 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [savingCommandBase, setSavingCommandBase] = useState(false);
   const mapRef = useRef(null);
 
+  useEffect(() => {
+    if (!showFeedback) return;
+    const onKeyDown = e => { if (e.key === 'Escape') setShowFeedback(false); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showFeedback]);
+
   function handleOpenCommandBaseEditor() {
     if (readOnly) return;
     setCommandBaseInput(commandBase?.address ?? '');
@@ -468,9 +475,17 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
               maxHeight: 'calc(100% - 24px)', overflowY: 'auto',
               background: '#fff', borderRadius: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0' }}>
+              {/* Sticky, not just top-of-flow: the form scrolls (recording
+                  preview + severity + fields can exceed the panel height),
+                  and a close button that scrolls away with it is no close
+                  button at all — that was the actual bug report. */}
+              <div style={{
+                position: 'sticky', top: 0, zIndex: 1, background: '#fff',
+                display: 'flex', alignItems: 'center', padding: '10px 12px',
+                borderBottom: '1px solid #e5e7eb', borderRadius: '10px 10px 0 0',
+              }}>
                 <strong style={{ flex: 1, fontSize: 14 }}>🐛 Report Issue</strong>
-                <button onClick={() => setShowFeedback(false)} style={{ background: 'transparent', padding: '2px 6px' }}>✕</button>
+                <button onClick={() => setShowFeedback(false)} style={{ background: 'transparent', padding: '2px 6px', fontSize: 16 }}>✕</button>
               </div>
               <div style={{ padding: 12 }}>
                 <FeedbackForm

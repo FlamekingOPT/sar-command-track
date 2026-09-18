@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 // Hard ceiling so a tester who forgets to stop doesn't fill the Storage
 // bucket (storage.rules also caps upload SIZE server-side, independently).
@@ -56,6 +56,14 @@ export function useScreenRecording() {
     setVideoBlob(null);
     setPreviewUrl(null);
   }, [previewUrl]);
+
+  // Closing the report overlay mid-recording (or any other unmount) must not
+  // leave the OS-level "sharing your screen" capture running with no way to
+  // stop it short of reloading the page.
+  useEffect(() => () => {
+    clearTimeout(timeoutRef.current);
+    streamRef.current?.getTracks().forEach(t => t.stop());
+  }, []);
 
   return { recording, videoBlob, previewUrl, error, start, stop, reset };
 }
