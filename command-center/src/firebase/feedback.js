@@ -11,12 +11,14 @@ export async function uploadFeedbackVideo(blob) {
   return getDownloadURL(storageRef);
 }
 
-export async function createFeedback({ type, title, description, severity, reporter, videoURL }) {
+export async function createFeedback({ type, title, description, severity, reporter, videoURL, searchId, searchName }) {
   await addDoc(feedbackCol, {
     type, title, description,
     severity: type === 'bug' ? severity : null,
     reporter: reporter || null,
     videoURL: videoURL || null,
+    searchId: searchId || null,
+    searchName: searchName || null,
     status: 'new',
     createdAt: serverTimestamp(),
   });

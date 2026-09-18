@@ -11,6 +11,7 @@ import { updateSearchBoundaries, updateSearchCommandBase, publishSearch, complet
 import { watchTracks, watchMarkers } from '../firebase/live';
 import { createPin, deletePin, watchPins } from '../firebase/pins';
 import { geocodeAddress } from '../map/geocode';
+import { FeedbackForm } from '../feedback/FeedbackForm';
 
 const DAY_ID = 'day-1';
 
@@ -38,6 +39,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [commandBase, setCommandBase] = useState(null);
   const [commandBaseError, setCommandBaseError] = useState('');
   const [editingCommandBase, setEditingCommandBase] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
   const [commandBaseInput, setCommandBaseInput] = useState('');
   const [savingCommandBase, setSavingCommandBase] = useState(false);
   const mapRef = useRef(null);
@@ -420,6 +422,13 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         )}
 
         <span style={{ flex: 1 }} />
+        {/* Report a bug/feature straight from the search that surfaced it —
+            not gated by readOnly, reporting isn't a mutation of the search
+            itself, and a completed search can still have something worth
+            flagging. */}
+        <button onClick={() => setShowFeedback(s => !s)} style={{ background: showFeedback ? '#7c3aed' : '#334155', padding: '4px 12px' }}>
+          🐛 Report Issue
+        </button>
         <button onClick={onLogout} style={{ background: '#334155', padding: '4px 12px' }}>Sign Out</button>
       </div>
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -452,6 +461,24 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
               onSave={handleSavePin}
               onCancel={() => setPendingPinLocation(null)}
             />
+          )}
+          {showFeedback && (
+            <div style={{
+              position: 'absolute', top: 12, right: 12, zIndex: 10, width: 320,
+              maxHeight: 'calc(100% - 24px)', overflowY: 'auto',
+              background: '#fff', borderRadius: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', padding: '10px 12px 0' }}>
+                <strong style={{ flex: 1, fontSize: 14 }}>🐛 Report Issue</strong>
+                <button onClick={() => setShowFeedback(false)} style={{ background: 'transparent', padding: '2px 6px' }}>✕</button>
+              </div>
+              <div style={{ padding: 12 }}>
+                <FeedbackForm
+                  searchContext={{ searchId, searchName }}
+                  onSubmitted={() => setShowFeedback(false)}
+                />
+              </div>
+            </div>
           )}
         </div>
         <ZonePanel
