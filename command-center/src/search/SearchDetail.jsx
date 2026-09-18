@@ -296,7 +296,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <div style={{ display: 'flex', gap: 8, padding: '8px 16px', background: '#1e293b', color: '#f8fafc', alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '8px 16px', background: '#1e293b', color: '#f8fafc', alignItems: 'center' }}>
         <button onClick={onBack} style={{ background: 'transparent', padding: '4px 8px' }}>← Searches</button>
         <span style={{ fontWeight: 700, marginRight: 8 }}>{searchName || 'SAR Command'}</span>
         {searchCode && (
