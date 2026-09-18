@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export const CommandMap = forwardRef(function CommandMap({ commandBase = null, drawMode, onFeatureDrawn, boundaries = [], editable = false, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped, pins = [], pinDropMode = false, onPinDrop, onPinClick }, ref) {
+export const CommandMap = forwardRef(function CommandMap({ commandBase = null, drawMode, onFeatureDrawn, boundaries = [], editable = false, unlockedBoundaryIds = null, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped, pins = [], pinDropMode = false, onPinDrop, onPinClick }, ref) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -261,11 +261,22 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
   // on the plain geojson source. draw.set is idempotent — echoing the prop
   // back after a create/update round-trips through the parent without flicker
   // because feature ids are stable.
+  //
+  // unlockedBoundaryIds gates which editable boundaries actually go into
+  // Draw: a boundary NOT in that set is locked — visible but not draggable,
+  // even though editable=true. Without this, a boundary with zones already
+  // generated stayed a full-canvas draggable Draw feature for the entire
+  // life of an active search, so any accidental click-drag on it (reaching
+  // for a zone, panning) silently relocated the whole boundary and, because
+  // it already had zones, fired the "editing deletes its zones" confirm —
+  // easy to click through without registering what it does (field bug
+  // 2026-09-17: "moving polygon deletes the zones"). A boundary with no
+  // zones yet is always unlocked regardless of this set — nothing to lose
+  // while it's still being positioned during initial setup.
   useEffect(() => {
     const map = mapRef.current;
     const draw = drawRef.current;
     if (!map || !draw || !mapLoaded) return;
-    const features = boundaries.map(b => ({ type: 'Feature', id: b.id, geometry: b.geometry, properties: {} }));
     const editingZone = zoneEditId ? zonesRef.current.find(z => z.id === zoneEditId) : null;
     if (editingZone?.polygon) {
       // Reshaping puts ONLY that zone in Draw: boundaries drop to the read-only
@@ -280,15 +291,23 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
       ));
       draw.changeMode('direct_select', { featureId: editingZone.id });
     } else if (editable) {
-      draw.set({ type: 'FeatureCollection', features });
-      map.getSource('boundary')?.setData(turf.featureCollection([]));
+      const isLocked = b => unlockedBoundaryIds && !unlockedBoundaryIds.has(b.id);
+      const live = boundaries.filter(b => !isLocked(b));
+      const locked = boundaries.filter(isLocked);
+      draw.set({
+        type: 'FeatureCollection',
+        features: live.map(b => ({ type: 'Feature', id: b.id, geometry: b.geometry, properties: {} })),
+      });
+      map.getSource('boundary')?.setData(turf.featureCollection(
+        locked.map(b => ({ type: 'Feature', geometry: b.geometry, properties: {} }))
+      ));
     } else {
       draw.set({ type: 'FeatureCollection', features: [] });
       map.getSource('boundary')?.setData(turf.featureCollection(
         boundaries.map(b => ({ type: 'Feature', geometry: b.geometry, properties: {} }))
       ));
     }
-  }, [boundaries, editable, mapLoaded, zoneEditId]);
+  }, [boundaries, editable, mapLoaded, zoneEditId, unlockedBoundaryIds]);
 
   useEffect(() => {
     const map = mapRef.current;

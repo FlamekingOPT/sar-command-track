@@ -42,6 +42,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [showFeedback, setShowFeedback] = useState(false);
   const [commandBaseInput, setCommandBaseInput] = useState('');
   const [savingCommandBase, setSavingCommandBase] = useState(false);
+  const [boundariesUnlocked, setBoundariesUnlocked] = useState(false);
   const mapRef = useRef(null);
 
   useEffect(() => {
@@ -176,6 +177,17 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   // so a missing boundaryId is attributed there. Keeps "does this boundary have
   // zones?" true for old searches.
   const zoneBelongsTo = (z, boundaryId) => (z.boundaryId ?? 'legacy-1') === boundaryId;
+
+  // Boundaries with zones already generated stay locked (visible, not
+  // draggable) unless explicitly unlocked — see CommandMap's comment on
+  // unlockedBoundaryIds for why (field bug: an accidental whole-boundary
+  // drag silently deleted all its zones). A boundary with no zones yet is
+  // always safe to drag freely, so it's included here regardless.
+  const unlockedBoundaryIds = new Set(
+    boundaries
+      .filter(b => boundariesUnlocked || !zones.some(z => zoneBelongsTo(z, b.id)))
+      .map(b => b.id)
+  );
 
   async function handleFeatureDrawn(feature) {
     if (readOnly) return;
@@ -334,6 +346,18 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
           <span style={{ color: '#fca5a5', fontSize: 13 }}>{zoneEditError}</span>
         )}
 
+        {/* Boundaries with zones stay locked (visible, not draggable) unless
+            explicitly unlocked — see unlockedBoundaryIds' comment. Only shown
+            once there's something to protect. */}
+        {!readOnly && boundaries.some(b => zones.some(z => zoneBelongsTo(z, b.id))) && (
+          <button
+            onClick={() => setBoundariesUnlocked(u => !u)}
+            title={boundariesUnlocked ? 'Boundaries can be dragged — click to lock' : 'Boundaries are locked against accidental drags'}
+            style={{ background: boundariesUnlocked ? '#f59e0b' : '#334155', padding: '4px 12px' }}>
+            {boundariesUnlocked ? '🔓 Boundaries Unlocked' : '🔒 Boundaries Locked'}
+          </button>
+        )}
+
         {/* Drop a pin with a note anywhere on the map — visible to searchers. */}
         {!readOnly && (
           <button
@@ -447,6 +471,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
             onFeatureDrawn={handleFeatureDrawn}
             boundaries={boundaries}
             editable={!readOnly}
+            unlockedBoundaryIds={unlockedBoundaryIds}
             onBoundaryEdited={handleBoundaryEdited}
             onBoundaryDeleted={handleBoundaryDeleted}
             zones={zones}
