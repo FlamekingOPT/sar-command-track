@@ -4,6 +4,10 @@ service cloud.firestore {
     match /volunteers/{id} {
       allow read, write: if true;
     }
+    match /feedback/{reportId} {
+      allow read, create, update: if request.auth != null; // command-center only
+      allow delete: if request.auth != null; // admin clearing out old reports
+    }
     match /searcherLinks/{token} {
       allow read: if true;   // the app resolves tokens client-side
       allow create: if true; // web picker claims a zone + writes its own link (open trust model)

@@ -4,25 +4,25 @@ import { LoginPage } from './auth/LoginPage';
 import { SearchSetup } from './search/SearchSetup';
 import { SearchDetail } from './search/SearchDetail';
 import { HomeDashboard } from './home/HomeDashboard';
+import { FeedbackPage } from './feedback/FeedbackPage';
 import { watchVolunteers } from './firebase/volunteers';
 
 function parseHash() {
+  if (location.hash === '#/feedback') return { view: 'feedback' };
   const match = location.hash.match(/^#\/search\/(.+)$/);
-  return match ? match[1] : null;
+  return match ? { view: 'detail', searchId: match[1] } : null;
 }
 
 export default function App() {
   const { user, logout } = useAuth();
-  const [view, setView] = useState('home'); // 'home' | 'detail'
-  const [searchId, setSearchId] = useState(() => parseHash());
+  const [view, setView] = useState(() => parseHash()?.view ?? 'home'); // 'home' | 'detail' | 'feedback'
+  const [searchId, setSearchId] = useState(() => parseHash()?.searchId ?? null);
   const [volunteers, setVolunteers] = useState({});
 
   useEffect(() => {
-    if (parseHash()) setView('detail');
-  }, []);
-
-  useEffect(() => {
-    location.hash = (view === 'detail' && searchId) ? `#/search/${searchId}` : '#/';
+    if (view === 'detail' && searchId) location.hash = `#/search/${searchId}`;
+    else if (view === 'feedback') location.hash = '#/feedback';
+    else location.hash = '#/';
   }, [view, searchId]);
 
   useEffect(() => watchVolunteers(setVolunteers), []);
@@ -40,7 +40,11 @@ export default function App() {
   }
 
   if (view === 'home') {
-    return <HomeDashboard onOpen={openSearch} onNewSearch={() => openSearch(null)} onLogout={logout} />;
+    return <HomeDashboard onOpen={openSearch} onNewSearch={() => openSearch(null)} onFeedback={() => setView('feedback')} onLogout={logout} />;
+  }
+
+  if (view === 'feedback') {
+    return <FeedbackPage onBack={goHome} onLogout={logout} />;
   }
 
   if (!searchId) {

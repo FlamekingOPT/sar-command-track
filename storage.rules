@@ -1,0 +1,15 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Bug/feature screen recordings — command-center only, same authed-only
+    // model as the searches collection itself (firestore.rules). Capped
+    // client-side to short clips (FeedbackPage.jsx), but enforce a hard
+    // server-side ceiling too so a broken client can't fill the bucket.
+    match /feedback/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 200 * 1024 * 1024
+        && request.resource.contentType.matches('video/.*');
+    }
+  }
+}

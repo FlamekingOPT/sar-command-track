@@ -3,7 +3,7 @@ import { watchSearches } from '../firebase/searches';
 import { sortSearches } from './sortSearches';
 import { SearchRow } from './SearchRow';
 
-export function HomeDashboard({ onOpen, onNewSearch, onLogout }) {
+export function HomeDashboard({ onOpen, onNewSearch, onFeedback, onLogout }) {
   const [searches, setSearches] = useState([]);
 
   useEffect(() => watchSearches(setSearches), []);
@@ -15,6 +15,9 @@ export function HomeDashboard({ onOpen, onNewSearch, onLogout }) {
         <span style={{ flex: 1 }} />
         <button onClick={onNewSearch} style={{ background: '#3b82f6', padding: '8px 16px', fontWeight: 700 }}>
           + New Search
+        </button>
+        <button onClick={onFeedback} style={{ background: '#7c3aed', color: '#fff', padding: '8px 16px' }}>
+          🐛 Feedback
         </button>
         <button onClick={onLogout} style={{ background: '#334155', color: '#fff', padding: '8px 16px' }}>
           Sign Out
