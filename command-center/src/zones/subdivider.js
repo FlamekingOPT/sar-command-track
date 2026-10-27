@@ -351,10 +351,14 @@ export function buildBlocks(boundary, hardLines, softLines, {
       if (!f) return [];
       return f.geometry.type === 'MultiPolygon' ? f.geometry.coordinates.map(c => turf.polygon(c)) : [f];
     })
-    // size cap applies AFTER clipping — a face's pre-clip (padded) area is
-    // inflated by whatever pad it happens to include, so checking before
-    // clipping rejects legitimate blocks (found while validating this code)
-    .filter(f => f && turf.area(f) > 1 && turf.area(f) < maxBlockAreaM2);
+    // Keep ALL non-degenerate faces, including over-cap ones. An over-cap face
+    // is almost always a legitimate large streetless area (golf course, park,
+    // big lot) clipped inside the boundary — dropping it leaves that ground with
+    // NO zone (P1 coverage bug: the LA Country Club had no zone). The cap is now
+    // a must-refine trigger in the refinement step below, not a delete, so an
+    // over-cap face is grid-split into coverage instead of erased (restores the
+    // lost 2026-07-26 fix 4351e13: 14.8% -> 100.7% coverage on real tiles).
+    .filter(f => f && turf.area(f) > 1);
 
   let blocks = dissolveSlivers(faces);
 
@@ -376,7 +380,12 @@ export function buildBlocks(boundary, hardLines, softLines, {
     const terrainBboxes = terrainPolygons.map(t => turf.bbox(t));
     const pathBboxes = terrainPaths.map(p => turf.bbox(p));
     blocks = blocks.flatMap((b, i) => {
-      if (efforts[i] <= targetEffort) return [b];
+      // Split only blocks that are genuinely too LARGE (over the area cap) — a
+      // big open face like a golf course, or any oversized coarse block. Normal
+      // under-cap blocks (dense or not) stay whole, so dense areas don't
+      // fragment into confetti; only the too-big ones get divided into a few
+      // pieces (field feedback 2026-10-26: one 1.2M m² golf zone was too big).
+      if (turf.area(b) <= maxBlockAreaM2) return [b];
       const bb = turf.bbox(b);
       const local = streets.filter((l, li) => bboxesTouch(lineBboxes[li], bb));
 
@@ -403,7 +412,12 @@ export function buildBlocks(boundary, hardLines, softLines, {
       try { sub = buildBlocks(b, [], local, { maxBlockAreaM2, skipAdjacency: true }); } catch { /* fall through to grid */ }
       if (sub?.blocks.length > 1) return sub.blocks;
       try {
-        const cellCount = Math.max(2, Math.round(efforts[i] / targetEffort));
+        // Cell count by AREA, not effort: open ground has low street-effort, so
+        // an effort-based count under-splits a huge streetless face (a golf
+        // course came out as 2 giant cells). Target ~one average-zone area per
+        // cell so a big open area splits into a sensible few pieces.
+        const targetArea = turf.area(boundary) / targetZoneCount;
+        const cellCount = Math.max(2, Math.round(turf.area(b) / targetArea));
         const cells = gridZones(b, cellCount);
         return cells.length > 1 ? cells : [b];
       } catch { return [b]; }
@@ -595,6 +609,7 @@ export function connectedParts(indices, neighbors) {
 }
 
 const KMEANS_MAX_ITERATIONS = 20;
+const COMPACTNESS_SMOOTH_PASSES = 12;
 
 // Clusters one compartment's blocks into `k` regions. k<=1 or a single-block
 // compartment skips clustering entirely (matches this file's existing
@@ -639,6 +654,35 @@ function clusterCompartmentBlocks(compIndices, k, weights, areasM2, centroids, n
       const members = compIndices.filter(i => assignment.get(i) === si);
       return members.length ? weightedCenter(members, weights, centroids) : center;
     });
+  }
+
+  // Compactness smoothing: nearest-centroid assignment grows thin arms — a
+  // block whose soft-neighbors mostly belong to an adjacent region sits as a
+  // protrusion (field feedback 2026-10-26: ~20% of zones came out stringy).
+  // Pull each such block into the region most of its neighbors are in (strict
+  // majority over its own), a few passes. connectedParts below still guarantees
+  // connected results; runt absorption cleans any tiny leftover.
+  for (let pass = 0; pass < COMPACTNESS_SMOOTH_PASSES; pass++) {
+    let moved = false;
+    for (const i of compIndices) {
+      const cur = assignment.get(i);
+      const tally = new Map();
+      for (const nb of neighbors[i] ?? []) {
+        if (!assignment.has(nb)) continue;
+        const r = assignment.get(nb);
+        tally.set(r, (tally.get(r) ?? 0) + 1);
+      }
+      if (!tally.size) continue;
+      let bestR = cur, bestC = -1;
+      for (const [r, c] of tally) if (c > bestC) { bestC = c; bestR = r; }
+      const curCount = tally.get(cur) ?? 0;
+      if (bestR !== cur && bestC > curCount) {
+        if (compIndices.filter(x => assignment.get(x) === cur).length <= 1) continue;
+        assignment.set(i, bestR);
+        moved = true;
+      }
+    }
+    if (!moved) break;
   }
 
   const clusters = seedCenters
