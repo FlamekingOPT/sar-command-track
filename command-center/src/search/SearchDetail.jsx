@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import * as turf from '@turf/turf';
 import { CommandMap } from '../map/CommandMap';
 import { ZonePanel } from '../ui/ZonePanel';
@@ -183,11 +183,18 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   // unlockedBoundaryIds for why (field bug: an accidental whole-boundary
   // drag silently deleted all its zones). A boundary with no zones yet is
   // always safe to drag freely, so it's included here regardless.
-  const unlockedBoundaryIds = new Set(
+  // Memoized: CommandMap's boundary-sync effect depends on this Set by
+  // reference, and calls draw.set(...) whenever it changes — which Mapbox
+  // GL Draw implicitly resets to simple_select mode. A plain `new Set(...)`
+  // here was a fresh object on every render, including the render from
+  // toggling draw mode, so every "Draw Boundary" click immediately undid
+  // itself: the button's state flipped, but Draw silently snapped back out
+  // of draw_polygon with no error, and clicking the map placed nothing.
+  const unlockedBoundaryIds = useMemo(() => new Set(
     boundaries
       .filter(b => boundariesUnlocked || !zones.some(z => zoneBelongsTo(z, b.id)))
       .map(b => b.id)
-  );
+  ), [boundaries, boundariesUnlocked, zones]);
 
   async function handleFeatureDrawn(feature) {
     if (readOnly) return;
