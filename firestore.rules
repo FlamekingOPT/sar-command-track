@@ -49,6 +49,15 @@ service cloud.firestore {
         allow read: if true;
         allow create, update, delete: if request.auth != null; // command-center only
       }
+      match /days/{dayId}/messages/{messageId} {
+        allow read: if true;
+        // from: 'command' or a volunteerId; to: a volunteerId, null (broadcast,
+        // command only), or 'command' (a searcher's reply — open trust, same
+        // model as markers/tracks: no auth on the searcher side at all).
+        allow create: if request.auth != null || request.resource.data.to == 'command';
+        allow update: if false;
+        allow delete: if request.auth != null; // admin clearing out an old search
+      }
     }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { getIdentity, saveName, getSavedRequest, saveRequest } from '../../src/pick/identity.js';
+import { getIdentity, saveName, savePhone, getSavedRequest, saveRequest } from '../../src/pick/identity.js';
 
 // In-memory localStorage stub — same globalThis-stubbing convention already
 // used for globalThis.indexedDB in offlineQueue.test.js.
@@ -35,6 +35,15 @@ describe('getIdentity', () => {
     const first = getIdentity().id;
     saveName('Dana Levi');
     expect(getIdentity().id).toBe(first);
+  });
+
+  it('returns null phone when none saved yet', () => {
+    expect(getIdentity().phone).toBeNull();
+  });
+
+  it('returns the saved phone after savePhone', () => {
+    savePhone('(310) 555-0142');
+    expect(getIdentity().phone).toBe('(310) 555-0142');
   });
 });
 

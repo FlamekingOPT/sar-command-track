@@ -3,6 +3,8 @@ import { parseToken } from './firebase/token';
 import { resolveLink } from './firebase/links';
 import { getZone, watchZone } from './firebase/zones';
 import { watchPins } from './firebase/pins';
+import { watchMessages, replyToMessage } from './firebase/messages';
+import { MessageBanners } from './ui/MessageBanners';
 import { enqueue, linkKeyOf } from './gps/offlineQueue';
 import { startSync, flushOnce } from './gps/sync';
 import { useGpsTracking } from './gps/useGpsTracking';
@@ -30,6 +32,7 @@ export default function App() {
   const [pinLocation, setPinLocation] = useState(null);
   const [localMarkers, setLocalMarkers] = useState([]);
   const [commandPins, setCommandPins] = useState([]);
+  const [messages, setMessages] = useState([]);
   const startedRef = useRef(false);
 
   const linkKey = linkKeyOf(link);
@@ -63,11 +66,12 @@ export default function App() {
     const stopWatch = watchZone(link, setZone);
     const stopSync = startSync(link);
     const stopPins = watchPins(link.searchId, link.dayId, setCommandPins);
+    const stopMessages = watchMessages(link.searchId, link.dayId, link.volunteerId, setMessages);
     if (!startedRef.current) {
       startedRef.current = true;
       if (zone?.status === 'assigned') enqueue('status', { status: 'in_progress' }, linkKey);
     }
-    return () => { stopWatch(); stopSync(); stopPins(); };
+    return () => { stopWatch(); stopSync(); stopPins(); stopMessages(); };
   }, [state, link]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (state === 'loading') return <Message>Loading your zone…</Message>;
@@ -112,6 +116,9 @@ export default function App() {
           </div>
         )}
       </div>
+
+      <MessageBanners messages={messages}
+        onReply={text => replyToMessage(link.searchId, link.dayId, { volunteerId: link.volunteerId, text })} />
 
       {pinLocation && (
         <MarkerForm

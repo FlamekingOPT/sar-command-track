@@ -10,6 +10,7 @@ import { createZones, updateZoneStatus, updateZonePolygon, watchZones, deleteZon
 import { updateSearchBoundaries, updateSearchCommandBase, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
 import { createPin, deletePin, watchPins } from '../firebase/pins';
+import { createMessage, watchMessages } from '../firebase/messages';
 import { geocodeAddress } from '../map/geocode';
 import { FeedbackForm } from '../feedback/FeedbackForm';
 
@@ -34,6 +35,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
   const [zoneEditId, setZoneEditId] = useState(null);
   const [zoneEditError, setZoneEditError] = useState('');
   const [pins, setPins] = useState([]);
+  const [messages, setMessages] = useState([]);
   const [pinDropMode, setPinDropMode] = useState(false);
   const [pendingPinLocation, setPendingPinLocation] = useState(null);
   const [commandBase, setCommandBase] = useState(null);
@@ -120,7 +122,8 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
     const stopTracks = watchTracks(searchId, DAY_ID, setTracks);
     const stopMarkers = watchMarkers(searchId, DAY_ID, setLiveMarkers);
     const stopPins = watchPins(searchId, DAY_ID, setPins);
-    return () => { stopTracks(); stopMarkers(); stopPins(); };
+    const stopMessages = watchMessages(searchId, DAY_ID, setMessages);
+    return () => { stopTracks(); stopMarkers(); stopPins(); stopMessages(); };
   }, [searchId]);
 
   function handleTogglePinDrop() {
@@ -287,6 +290,11 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
 
   async function handleStatusChange(zoneId, status) {
     await updateZoneStatus(searchId, DAY_ID, zoneId, status);
+  }
+
+  async function handleSendMessage({ to, text }) {
+    if (readOnly) return;
+    await createMessage(searchId, DAY_ID, { to, text });
   }
 
   async function handleComplete() {
@@ -524,8 +532,10 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
         <ZonePanel
           zones={zones}
           volunteers={volunteers}
+          messages={messages}
           onStatusChange={handleStatusChange}
           onZoneClick={handleZoneClick}
+          onSendMessage={handleSendMessage}
           selectedZoneId={selectedZoneId}
           readOnly={readOnly}
         />

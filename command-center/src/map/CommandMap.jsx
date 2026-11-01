@@ -351,7 +351,7 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
         [t.points[t.points.length - 1].lng, t.points[t.points.length - 1].lat],
         // An unregistered id would render as a UUID next to the dot — worse
         // than nothing, so those stay unlabelled.
-        { volunteerId: t.volunteerId, label: volunteers[t.volunteerId] ?? '' }
+        { volunteerId: t.volunteerId, label: volunteers[t.volunteerId]?.name ?? '' }
       ));
     map.getSource('searcher-positions')?.setData(turf.featureCollection(positions));
   }, [tracks, volunteers, mapLoaded]);
