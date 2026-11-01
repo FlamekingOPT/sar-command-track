@@ -323,9 +323,13 @@ function dissolveSlivers(faces) {
   return blocks.filter(b => meanWidthM(b) >= MIN_BLOCK_MEAN_WIDTH_M || turf.area(b) >= MIN_ISOLATED_SLIVER_AREA_M2);
 }
 
-// Refine any block whose street effort alone exceeds this multiple of the
-// per-zone effort share — it would force an unsplittable oversized zone.
-const REFINE_EFFORT_FACTOR = 1;
+// Refine any block larger than this multiple of a zone's AREA share — it would
+// force an oversized zone, since zones are built from whole blocks. Area, not
+// street effort, is the trigger: a block about one zone big stays whole; a
+// bigger one is cut into a few pieces so no single block can dominate a zone.
+// Set just under 1 to match the historical ~0.2 km² default cap at the LODs
+// this runs at, so this is a refactor of the trigger, not a behaviour change.
+const OVERSIZE_REFINE_FACTOR = 0.8;
 
 export function buildBlocks(boundary, hardLines, softLines, {
   maxBlockAreaM2 = MAX_PLAUSIBLE_BLOCK_AREA_M2,
@@ -374,18 +378,18 @@ export function buildBlocks(boundary, hardLines, softLines, {
   // "massive" zone no matter how large (field feedback 2026-07-16).
   if (targetZoneCount > 0 && blocks.length) {
     const streets = refineStreets ?? [];
-    const efforts = computeBlockEfforts(blocks, streets);
-    const targetEffort = (efforts.reduce((s, e) => s + e, 0) / targetZoneCount) * REFINE_EFFORT_FACTOR;
+    const targetArea = turf.area(boundary) / targetZoneCount;
+    const oversizeCap = targetArea * OVERSIZE_REFINE_FACTOR;
     const lineBboxes = streets.map(l => turf.bbox(l));
     const terrainBboxes = terrainPolygons.map(t => turf.bbox(t));
     const pathBboxes = terrainPaths.map(p => turf.bbox(p));
-    blocks = blocks.flatMap((b, i) => {
-      // Split only blocks that are genuinely too LARGE (over the area cap) — a
-      // big open face like a golf course, or any oversized coarse block. Normal
-      // under-cap blocks (dense or not) stay whole, so dense areas don't
-      // fragment into confetti; only the too-big ones get divided into a few
-      // pieces (field feedback 2026-10-26: one 1.2M m² golf zone was too big).
-      if (turf.area(b) <= maxBlockAreaM2) return [b];
+    blocks = blocks.flatMap((b) => {
+      // Split only blocks genuinely too LARGE — over a zone's area share (times
+      // the margin) — a big open face like a golf course, or any oversized
+      // coarse block. Blocks about one zone big stay whole, so dense areas
+      // don't fragment into confetti; only the too-big ones get divided into a
+      // few pieces (field feedback 2026-10-26: one 1.2M m² golf zone too big).
+      if (turf.area(b) <= oversizeCap) return [b];
       const bb = turf.bbox(b);
       const local = streets.filter((l, li) => bboxesTouch(lineBboxes[li], bb));
 
@@ -412,11 +416,8 @@ export function buildBlocks(boundary, hardLines, softLines, {
       try { sub = buildBlocks(b, [], local, { maxBlockAreaM2, skipAdjacency: true }); } catch { /* fall through to grid */ }
       if (sub?.blocks.length > 1) return sub.blocks;
       try {
-        // Cell count by AREA, not effort: open ground has low street-effort, so
-        // an effort-based count under-splits a huge streetless face (a golf
-        // course came out as 2 giant cells). Target ~one average-zone area per
-        // cell so a big open area splits into a sensible few pieces.
-        const targetArea = turf.area(boundary) / targetZoneCount;
+        // Cell count by AREA: target ~one average-zone area per cell so a big
+        // open face splits into a sensible few pieces, not 2 giant cells.
         const cellCount = Math.max(2, Math.round(turf.area(b) / targetArea));
         const cells = gridZones(b, cellCount);
         return cells.length > 1 ? cells : [b];

@@ -106,23 +106,24 @@ describe('buildBlocks', () => {
     expect(HARD_HIGHWAYS).toEqual(['motorway', 'trunk', 'primary']);
   });
 
-  it('refines a block whose street effort alone exceeds one zone share', () => {
-    // At city LOD a single block between majors can hold a whole dense grid
-    // (153 street-km in one Beverly Hills block, field feedback 2026-07-15) —
-    // zones are whole blocks, so no balancing can split it. Blocks whose
-    // effort exceeds the per-zone share must be re-polygonized with the
-    // full-detail streets, locally, leaving sparse blocks coarse.
-    const denseStreets = [
-      turf.lineString([[0.0005, -0.01], [0.0005, 0.013]]),
-      turf.lineString([[0.0010, -0.01], [0.0010, 0.013]]),
-    ]; // both inside the LEFT half only
-    const coarse = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, []);
-    expect(coarse.blocks).toHaveLength(2); // baseline: left | right of the hard road
-    const { blocks } = buildBlocks(GRID_BOUNDARY, HARD_VERTICAL, [], {
-      refineStreets: denseStreets,
+  it('refines an oversized block using its local streets', () => {
+    // Area model (2026-10-26): block SIZE drives refinement, not street
+    // density. A block bigger than a zone's area share would force an
+    // oversized zone (zones are whole blocks), so it is re-polygonized with the
+    // full-detail streets inside it into a few real blocks. The whole boundary
+    // here is one block well over a third of its own area (targetZoneCount 3),
+    // and two internal streets cut it into columns.
+    const streets = [
+      turf.lineString([[0.001, -0.01], [0.001, 0.013]]),
+      turf.lineString([[0.002, -0.01], [0.002, 0.013]]),
+    ]; // two N-S streets spanning the boundary → 3 columns
+    const coarse = buildBlocks(GRID_BOUNDARY, [], []);
+    expect(coarse.blocks).toHaveLength(1); // baseline: one whole-boundary block
+    const { blocks } = buildBlocks(GRID_BOUNDARY, [], [], {
+      refineStreets: streets,
       targetZoneCount: 3,
     });
-    expect(blocks.length).toBe(4); // left split into 3 columns, right untouched
+    expect(blocks.length).toBeGreaterThan(1); // oversized block split along its streets
     const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
     expect(covered / turf.area(GRID_BOUNDARY)).toBeGreaterThan(0.999);
   });
@@ -735,9 +736,14 @@ describe('buildBlocks at coarse detail (large legitimate blocks)', () => {
     turf.lineString([[0.015, 0.015], [0.04, 0.015]]),
   ];
 
-  it('discards km-scale blocks under the default cap (documents the old behavior)', () => {
+  it('keeps km-scale blocks under the default cap instead of discarding them', () => {
+    // P1 coverage fix: over-cap faces are no longer dropped (dropping them left
+    // big open areas with no zone). With no targetZoneCount to refine against,
+    // the km-scale quadrants survive whole rather than being erased.
     const { blocks } = buildBlocks(BIG, HARD_V, SOFT_H);
-    expect(blocks.length).toBe(0);
+    expect(blocks).toHaveLength(4);
+    const covered = blocks.reduce((s, b) => s + turf.area(b), 0);
+    expect(covered / turf.area(BIG)).toBeGreaterThan(0.999);
   });
 
   it('keeps km-scale blocks when maxBlockAreaM2 is raised for coarse detail', () => {
