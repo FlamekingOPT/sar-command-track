@@ -1,5 +1,60 @@
 # SAR Command & Track — Handoff
 
+## 2026-11-01 — zone generator split into its own file (isolated from live app); searcher phone-capture gap fixed. Neither pushed/merged/deployed.
+
+Two unrelated pieces of work, done in the same session, deliberately kept on two separate branches so continued zone-algorithm tuning can never risk the live app.
+
+### Part A — `subdivider.js` split into live-safe code + an unwired `zoneGenerator.js`
+
+Jack asked to isolate the zone-generation tuning work so it "never messes w app until its ready." Audited actual production imports first: only 4 symbols from `subdivider.js` are ever imported by live code — `allocateZoneCounts`, `orderZonesForNumbering`, `paddedBbox`, `HARD_HIGHWAYS` (used by `SearchDetail.jsx` and `overpass.js`). Everything else — `buildBlocks`, `mergeBlocksToZones`, `generateZones`, the k-means/compartment/sliver machinery — is experimental and unwired; the live app's zone generation actually runs through the separate, simpler `grid.js` path.
+
+- **`command-center/src/zones/subdivider.js`** — cut down to just those 4 live exports (~65 lines). Still imported by production code; this file is now the safety boundary.
+- **`command-center/src/zones/zoneGenerator.js`** (new) — everything else moved here verbatim. Imports from `subdivider.js` (one direction only — `paddedBbox`), nothing live imports from it. Header comment states explicitly that nothing in the app imports this file.
+- **`command-center/test/zones/subdivider.test.js`** — cut down to the 4 live-export tests (9 tests).
+- **`command-center/test/zones/zoneGenerator.test.js`** (new) — the other 53 tests, now importing from `zoneGenerator.js`.
+- Verified: 120/120 tests (command-center), lint clean (1 pre-existing unrelated warning), build clean. Pure move, no behavior change.
+- **Branch: `zone-quality-fixes`**, 3 commits ahead of `master` (`84317bb` field-eval demo fixes, `52c6c51` refine-trigger area-share fix, `fc9e2d2` this split). **Not pushed** — no `origin/zone-quality-fixes` exists yet. `master` itself is also 1 commit ahead of `origin/master` (`40bc974`, the design doc for this work) from before this session.
+- **Open:** nothing blocking — this is a pure refactor. Whenever further zone-quality tuning resumes, it happens in `zoneGenerator.js`; wiring any of it into the live app is a deliberate future step, not implied by this split.
+
+### Part B — searcher phone number: fixed a real gap, but verify it's the gap Jack actually hit
+
+Jack reported (paraphrased via chat, not the in-app Feedback page — not checked this session, see below) "messages work on the searcher app but no phone number on sign up."
+
+- **Code-reviewed the fresh sign-up path exhaustively** (`searcher-app/src/pick/PickPage.jsx`, `identity.js`, `claimZone.js`): airtight. The modal always asks for both name and phone together, `handleNameSubmit` requires both non-empty before calling `submitRequest`, and the only other call site (`handleTapZone`'s fast path) only skips the modal when both are already truthy. **A successful zone claim cannot happen without a phone being written** — `claimZone.js:11` merges `phone` into the `volunteers/{id}` doc every time. Confirmed the deployed bundle (`sar-searcher.web.app`) actually contains this code (fetched the live JS, "Phone number" string present).
+- **Real gap found instead:** `searcher-app/src/App.jsx` (the already-assigned `/s/{token}` view, where `MessageBanners` lives) never asks for a phone at all — only `PickPage`'s fresh-signup flow does. A volunteer already assigned *before* this feature existed (or whose `localStorage` predates it) has no path back through sign-up and so can never be asked. This matches "messages work [this view does need no phone to work], no phone on file" precisely for that volunteer.
+- **Fix:** one-time phone prompt added to the assigned view itself.
+  - **`searcher-app/src/firebase/volunteers.js`** (new) — `setVolunteerPhone(volunteerId, phone)`, a merge-write to the `volunteers` doc, mirroring what `claimZone.js` already does.
+  - **`searcher-app/src/App.jsx`** — reads `identity` via the existing `pick/identity.js` helpers; if `!identity.phone`, shows a bottom-fixed form (same style as `PickPage`'s), positioned above the "Pick another zone" link when that's also showing. Saves to `localStorage` + Firestore on submit.
+  - Verified: 32/32 tests (searcher-app, untouched), build clean. The `App.jsx` conditional-hooks lint errors this triggers are **pre-existing** (confirmed by stashing the change and re-running lint — identical errors on the unmodified file) — not introduced here, not fixed here.
+- **Not independently verified against a real assignment** — doing that would mean either writing a fake assignment into the live production Firestore project (no emulator configured anywhere in this repo) or logging into Command Center with real staff credentials, neither of which happened without Jack's say-so.
+- **⚠️ Open question, flagged by Jack directly: this fix may not be what he actually hit.** He pushed back that "each new search should populate new signup" — i.e. he expected every new search to re-ask, which the fresh-signup path already does correctly (see above), making him skeptical this already-assigned-view gap is the real explanation. Worth knowing: `identity.js` persists `name`/`phone` **globally per device** (`localStorage`, not scoped per search) — once a volunteer has given a phone once, later searches on the same device correctly skip re-asking. If that's not actually the model Jack wants, that's a separate, bigger design question, not a bug in this fix. **The CLAUDE.md-mandated step of checking the in-app Feedback page (Firestore `feedback` collection) for the original tester report was never done this session** — no Command Center login available without entering real staff credentials. If this resurfaces, check that collection first before trusting this writeup's theory.
+- **Branch: `feature/searcher-contact-and-messaging`** (off `master`), 2 commits (`7747ed5` the original phone+messaging feature, already pushed; `9901408` this fix, **not pushed**).
+
+### Everything else sitting in the repo right now (full inventory, verified against `git branch -vv` / `git branch -r`, not assumed)
+
+| Branch | Ahead of master | Pushed? | What it is |
+|---|---|---|---|
+| `zone-quality-fixes` | 3 | No | Part A above |
+| `feature/searcher-contact-and-messaging` | 2 | Partially (1 of 2 commits) | Part B above |
+| `feature/searcher-history-and-contact` | 1 (docs only) | Unknown, not checked | Old spec+plan for a *different* contact-history feature (ZonePanel click-to-see-history), zero app code — superseded in spirit by Part B's simpler phone capture; not reconciled, not deleted |
+| `feat/zone-panel-resize` | merged already per 2026-09-16 entry above | — | Historical, not new |
+| `claude/serene-lamport-daisrp` | 1 | Yes (own remote branch) | Small street-tile-fetch timeout fix, per 2026-09-16 entry — still never folded into master |
+| `worktree-flat-zone-grid` (local) / `origin/gridsubdivide-wip` (remote) | — | — | Old superseded `gridSubdivide` algorithm work, pre-dates current `subdivider.js` architecture — per 2026-09-16 entry, conflicts hard if merged, mostly skip |
+| `master` | — | Ahead of `origin/master` by 1 (`40bc974`) | Pre-dates this session |
+
+`.claude/worktrees/` (flat-zone-grid, pin-drops, zone-growth-redesign) sit untracked in the working tree, pre-dating this session — not touched, not cleaned up here.
+
+Also uncommitted on disk, pre-dating and surviving this whole session: `.claude/launch.json` has an added `searcher-app` dev-server entry (port 5174) — harmless local tooling config, never committed, never discussed with Jack as something that needs to be.
+
+### START HERE if picking this up
+
+1. **Decide the phone-fix question above first** — ask Jack whether the already-assigned-view gap is really what he hit, or whether `identity.js`'s global-per-device persistence needs to change (fresh ask every search). Check the Feedback collection in Command Center for the original report if still unsure.
+2. If Part B's fix is confirmed correct: push `feature/searcher-contact-and-messaging` (2 commits), then decide whether to merge/deploy alongside the original messaging feature (neither is deployed yet).
+3. Part A (`zone-quality-fixes`) has nothing blocking it — push whenever, it's a pure refactor. Further zone-quality tuning work continues in `zoneGenerator.js` from here.
+4. `master`'s own unpushed `40bc974` (design doc) — push whenever, it's docs-only, zero risk.
+
+---
+
 ## 2026-09-16 — PUSH THIS TO PRODUCTION: k-means + pin drops both merged to `master`, pushed, NOT deployed
 
 Same session as the 2026-09-11 k-means entry directly below (picked back up after Jack field-tested it). Two things happened:
