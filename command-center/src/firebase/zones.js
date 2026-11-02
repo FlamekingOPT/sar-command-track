@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, updateDoc, onSnapshot, serverTimestamp, writeBatch } from 'firebase/firestore';
+import { collection, doc, deleteDoc, getDocs, updateDoc, onSnapshot, serverTimestamp, writeBatch } from 'firebase/firestore';
 import { db } from './config';
 
 const zonesCol = (searchId, dayId) =>
@@ -48,6 +48,10 @@ export async function updateZonePolygon(searchId, dayId, zoneId, polygon) {
   await updateDoc(doc(db, 'searches', searchId, 'days', dayId, 'zones', zoneId), {
     polygon: JSON.stringify(polygon),
   });
+}
+
+export async function deleteZone(searchId, dayId, zoneId) {
+  await deleteDoc(doc(db, 'searches', searchId, 'days', dayId, 'zones', zoneId));
 }
 
 export async function updateZoneStatus(searchId, dayId, zoneId, status) {

@@ -14,7 +14,7 @@ const STATUS_COLORS = {
   in_progress: '#f59e0b', searched: '#22c55e', needs_re_search: '#ef4444',
 };
 
-export const CommandMap = forwardRef(function CommandMap({ commandBase = null, drawMode, onFeatureDrawn, boundaries = [], editable = false, unlockedBoundaryIds = null, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped, pins = [], pinDropMode = false, onPinDrop, onPinClick }, ref) {
+export const CommandMap = forwardRef(function CommandMap({ commandBase = null, drawMode, onFeatureDrawn, boundaries = [], editable = false, unlockedBoundaryIds = null, onBoundaryEdited, onBoundaryDeleted, zones = [], tracks = [], liveMarkers = [], volunteers = {}, selectedZoneId = null, onZoneClick, zoneEditId = null, onZoneReshaped, onZoneDeleted, pins = [], pinDropMode = false, onPinDrop, onPinClick }, ref) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const drawRef = useRef(null);
@@ -36,6 +36,7 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
   const onBoundaryDeletedRef = useRef(onBoundaryDeleted);
   const onZoneClickRef = useRef(onZoneClick);
   const onZoneReshapedRef = useRef(onZoneReshaped);
+  const onZoneDeletedRef = useRef(onZoneDeleted);
   // draw.update fires from the same Draw instance for both a boundary and a
   // zone being reshaped, and the handler is bound once on mount — it needs the
   // CURRENT edit target to tell the two apart.
@@ -51,6 +52,7 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
   useEffect(() => { onBoundaryDeletedRef.current = onBoundaryDeleted; }, [onBoundaryDeleted]);
   useEffect(() => { onZoneClickRef.current = onZoneClick; }, [onZoneClick]);
   useEffect(() => { onZoneReshapedRef.current = onZoneReshaped; }, [onZoneReshaped]);
+  useEffect(() => { onZoneDeletedRef.current = onZoneDeleted; }, [onZoneDeleted]);
   useEffect(() => { zoneEditIdRef.current = zoneEditId; }, [zoneEditId]);
   useEffect(() => { zonesRef.current = zones; }, [zones]);
 
@@ -198,10 +200,11 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
     });
     map.on('draw.delete', e => {
       for (const f of e.features) {
-        // Trash while reshaping would silently drop a numbered zone — Draw's
-        // copy is put back by the sync effect below.
-        if (String(f.id) === zoneEditIdRef.current) continue;
-        onBoundaryDeletedRef.current?.(String(f.id));
+        const id = String(f.id);
+        // Trash while reshaping targets the zone being reshaped, not a
+        // boundary — route it to the zone-delete callback instead.
+        if (id === zoneEditIdRef.current) onZoneDeletedRef.current?.(id);
+        else onBoundaryDeletedRef.current?.(id);
       }
     });
 

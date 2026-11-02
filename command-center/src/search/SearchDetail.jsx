@@ -6,7 +6,7 @@ import { PinForm } from '../ui/PinForm';
 import { allocateZoneCounts, orderZonesForNumbering } from '../zones/subdivider';
 import { gridZones } from '../zones/grid';
 import { validateZonePolygon, zonesToGenerate } from '../zones/reshape';
-import { createZones, updateZoneStatus, updateZonePolygon, watchZones, deleteZonesForBoundary } from '../firebase/zones';
+import { createZones, updateZoneStatus, updateZonePolygon, deleteZone, watchZones, deleteZonesForBoundary } from '../firebase/zones';
 import { updateSearchBoundaries, updateSearchCommandBase, publishSearch, completeSearch, watchSearch } from '../firebase/searches';
 import { watchTracks, watchMarkers } from '../firebase/live';
 import { createPin, deletePin, watchPins } from '../firebase/pins';
@@ -106,6 +106,23 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
     } catch (err) {
       console.error('handleZoneReshaped failed:', err);
       setZoneEditError('Could not save the new shape — check your connection.');
+    }
+  }
+
+  async function handleZoneDeleted(id) {
+    const zone = zones.find(z => z.id === id);
+    // Draw already dropped the feature locally; either way exit reshape mode —
+    // on cancel the zone itself is untouched (nothing was written to
+    // Firestore yet) and re-renders normally from the zones layer once Draw
+    // releases it.
+    setZoneEditId(null);
+    if (!window.confirm(`Delete zone ${zone?.number ?? ''}? This cannot be undone.`)) return;
+    setSelectedZoneId(null);
+    try {
+      await deleteZone(searchId, DAY_ID, id);
+    } catch (err) {
+      console.error('handleZoneDeleted failed:', err);
+      setZoneEditError('Could not delete the zone — check your connection.');
     }
   }
 
@@ -489,6 +506,7 @@ export function SearchDetail({ searchId, volunteers, onBack, onLogout }) {
             onZoneClick={handleZoneClickById}
             zoneEditId={zoneEditId}
             onZoneReshaped={handleZoneReshaped}
+            onZoneDeleted={handleZoneDeleted}
             pins={pins}
             pinDropMode={pinDropMode}
             onPinDrop={handlePinDrop}
