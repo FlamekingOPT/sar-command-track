@@ -202,11 +202,30 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
       for (const f of e.features) {
         const id = String(f.id);
         // Trash while reshaping targets the zone being reshaped, not a
-        // boundary — route it to the zone-delete callback instead.
+        // boundary — route it to the zone-delete callback instead. (Normally
+        // intercepted below before Draw gets here; this stays as a fallback
+        // for the Backspace/Delete keybinding, which isn't intercepted.)
         if (id === zoneEditIdRef.current) onZoneDeletedRef.current?.(id);
         else onBoundaryDeletedRef.current?.(id);
       }
     });
+
+    // Draw's trash button deletes whichever sub-feature is selected, not
+    // necessarily the whole zone: after dragging a vertex to reshape, that
+    // vertex stays selected, so trash removes just the point (a draw.update,
+    // not a draw.delete) instead of the zone — the zone looked like it
+    // couldn't be deleted at all. Intercepting the click at the capture phase
+    // on an ancestor runs before Draw's own listener on the button, so we can
+    // always route a trash click straight to the zone-delete callback while
+    // reshaping, regardless of what Draw has sub-selected.
+    const handleTrashCapture = e => {
+      if (!zoneEditIdRef.current) return;
+      if (!e.target.closest?.('.mapbox-gl-draw_trash')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onZoneDeletedRef.current?.(zoneEditIdRef.current);
+    };
+    map.getContainer().addEventListener('click', handleTrashCapture, true);
 
     map.on('click', 'zones-fill', e => {
       if (pinDropModeRef.current) return; // dropping a pin takes priority over zone selection
@@ -241,7 +260,11 @@ export const CommandMap = forwardRef(function CommandMap({ commandBase = null, d
 
     mapRef.current = map;
     drawRef.current = draw;
-    return () => { setMapLoaded(false); map.remove(); };
+    return () => {
+      setMapLoaded(false);
+      map.getContainer().removeEventListener('click', handleTrashCapture, true);
+      map.remove();
+    };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useImperativeHandle(ref, () => ({
