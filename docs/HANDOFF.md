@@ -1,5 +1,18 @@
 # SAR Command & Track — Handoff
 
+## 2026-11-01 — Boundary-draw fix + zone delete, both deployed and verified live
+
+Checked the Feedback page first (per standing instruction) — no new tester reports, this session's work came entirely from Jack directly.
+
+1. **Boundary-draw-mode-reset fix** (already committed before this session, `fae2ac8`) — pushed, merged to `master`, deployed. Verified live via bundle-hash match, and separately confirmed boundary drawing works on mobile (touch-emulated testing: vertex placement correct; full finalize-and-save not click-tested, see note below).
+2. **Zone delete, new feature.** Jack reported "delete zone by using garbage icon isnt working" — root-caused as a missing feature, not a regression (`git log --all` shows no single-zone delete ever existed, only bulk delete-all-zones-under-a-boundary). Jack chose "trash icon while reshaping" over a separate delete button in the zone panel. Built: `deleteZone()` in `command-center/src/firebase/zones.js`; `CommandMap.jsx`'s `draw.delete` handler routes the zone being reshaped to the new callback instead of no-oping; `SearchDetail.jsx`'s `handleZoneDeleted` confirms (`window.confirm`) then deletes. Commit `17e4b20`.
+3. **Zone delete had a real bug on first deploy, found by Jack live.** "Can delete the reshape but not the zone" — Mapbox Draw's trash button deletes whichever *sub-feature* is selected inside it, not necessarily the whole feature: after dragging a vertex to reshape, that vertex stays selected, so trash removed just the point (fires `draw.update`, read by the app as a normal reshape edit) instead of the zone. Fixed by intercepting the trash button's click at the capture phase on an ancestor — runs before Draw's own bubble-phase listener on the button (confirmed against Draw's `ui.js` source, which attaches via plain `addEventListener('click', ...)`, no capture) — and routing it straight to the zone-delete callback while reshaping, bypassing Draw's selection ambiguity entirely. Commit `7e6b397`. **Scoped to the trash-icon click only** — the Backspace/Delete keybinding has the same underlying ambiguity and isn't intercepted (falls back to the old, still-buggy `draw.delete`-handler routing), not yet reported as an issue.
+   - Verified live by Jack on `test 11.1` (prod): worked, "took a few tries" first time — not pursued further (Jack's call; likely just missed the confirm dialog, not re-investigated).
+
+**Both deploys verified against the live bundle hash**, not just "deploy succeeded": `fae2ac8` → `index-DL6DuKEm.js`, `17e4b20`+`7e6b397` together → `index-DxU-Cb1W.js`, both diffed against the local build's own `dist/assets/index-*.js`.
+
+**Residual gap:** the actual trash-click delete-confirm-and-persist path could not be click-tested by Claude directly against prod data — Claude Code's own permission guard blocks destructive clicks on live Firestore-backed searches (hit twice this session, on boundary-finalize and on the zone trash icon). Confidence came from unit tests (120/120 passing both times) plus Jack's own live click-through, not Claude's.
+
 ## 2026-09-16 — PUSH THIS TO PRODUCTION: k-means + pin drops both merged to `master`, pushed, NOT deployed
 
 Same session as the 2026-09-11 k-means entry directly below (picked back up after Jack field-tested it). Two things happened:
