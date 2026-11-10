@@ -1,5 +1,17 @@
 # SAR Command & Track — Handoff
 
+## 2026-11-09 — Messaging + contact feature merged to master and deployed (command-center, searcher-app, rules)
+
+Resolved the open question from the 2026-11-01 entry below (searcher phone-capture fix): Jack confirmed the "ask once per device" model (`identity.js`, `localStorage`) is actually correct — only ask when no phone is on file, not fresh every search. `9901408`'s fix stands as-is.
+
+- `feature/searcher-contact-and-messaging` (`7747ed5`, `9901408`, `b64aba0` — searcher phone+messaging, assigned-view phone-prompt fix, handoff doc) was already fully pushed by the time this session checked (handoff doc's "1 of 2 commits" note was stale).
+- Merged into `master` (`e7be6a8`), one conflict (this doc only — both branches added a 2026-11-01 entry; kept both, concatenated). Code auto-merged clean across `CommandMap.jsx`/`SearchDetail.jsx`/`ZonePanel.jsx` despite both branches touching them.
+- `searcher-app` worktree here had no `node_modules` — installed before testing.
+- Verified: command-center 120/120, searcher-app 32/32, both post-merge.
+- Also matched the actual implementation against the "Message Searchers Mockup" design artifact from 2026-10-26 (`ZonePanel.jsx` card-row redesign, `MessageBanners.jsx`) — built faithfully, plus went beyond the mockup: message-thread history in the compose panel, inline Reply on searcher-side banners (mockup only had dismiss).
+- **Deployed**: `firestore:rules` (new `days/{dayId}/messages/{messageId}` collection — open create for a searcher's own reply (`to == 'command'`), auth-gated otherwise), then `hosting:command-center` + `hosting:searcher` together. Verified against live bundle hashes: command-center `index-DxC1LS03.js`, searcher-app `index-CEOexsfm.js`, both matched local builds.
+- **Not independently re-verified live by Claude** (same permission-guard pattern as other destructive/production actions this project has hit repeatedly — not attempted here either). Smoke-test before relying on it in the field: assigned volunteer without a phone on file should get prompted once; Command Center's "Message All" / per-zone 💬 should compose and send; searcher app should show the banner and allow a reply.
+
 ## 2026-11-01 — Boundary-draw fix + zone delete, both deployed and verified live
 
 Checked the Feedback page first (per standing instruction) — no new tester reports, this session's work came entirely from Jack directly.
