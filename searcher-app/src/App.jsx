@@ -1,14 +1,18 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { parseToken } from './firebase/token';
 import { resolveLink } from './firebase/links';
 import { getZone, watchZone } from './firebase/zones';
 import { watchPins } from './firebase/pins';
+import { watchMessages, replyToMessage } from './firebase/messages';
+import { setVolunteerPhone } from './firebase/volunteers';
+import { MessageBanners } from './ui/MessageBanners';
 import { enqueue, linkKeyOf } from './gps/offlineQueue';
 import { startSync, flushOnce } from './gps/sync';
 import { useGpsTracking } from './gps/useGpsTracking';
 import { SearcherMap } from './map/SearcherMap';
 import { StatusButton } from './ui/StatusButton';
 import { MarkerForm } from './ui/MarkerForm';
+import { getIdentity, savePhone } from './pick/identity';
 import { parseSearchId } from './pick/pickToken';
 import { PickPage } from './pick/PickPage';
 
@@ -30,7 +34,14 @@ export default function App() {
   const [pinLocation, setPinLocation] = useState(null);
   const [localMarkers, setLocalMarkers] = useState([]);
   const [commandPins, setCommandPins] = useState([]);
+  const [messages, setMessages] = useState([]);
   const startedRef = useRef(false);
+  // Volunteers assigned before phone capture shipped (or whose localStorage
+  // predates it) never pass back through PickPage's sign-up form, so this is
+  // the only chance to backfill a phone command can actually call.
+  const identity = useMemo(getIdentity, []);
+  const [needsPhone, setNeedsPhone] = useState(!identity.phone);
+  const [phoneInput, setPhoneInput] = useState('');
 
   const linkKey = linkKeyOf(link);
   // Stops (and auto-resumes on reopen) with live zone.status, not just the local
@@ -63,15 +74,25 @@ export default function App() {
     const stopWatch = watchZone(link, setZone);
     const stopSync = startSync(link);
     const stopPins = watchPins(link.searchId, link.dayId, setCommandPins);
+    const stopMessages = watchMessages(link.searchId, link.dayId, link.volunteerId, setMessages);
     if (!startedRef.current) {
       startedRef.current = true;
       if (zone?.status === 'assigned') enqueue('status', { status: 'in_progress' }, linkKey);
     }
-    return () => { stopWatch(); stopSync(); stopPins(); };
+    return () => { stopWatch(); stopSync(); stopPins(); stopMessages(); };
   }, [state, link]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (state === 'loading') return <Message>Loading your zone…</Message>;
   if (state === 'invalid') return <Message>This link is no longer active. Ask command for a new one via /available in the group.</Message>;
+
+  function handleSavePhone(e) {
+    e.preventDefault();
+    const phone = phoneInput.trim();
+    if (!phone) return;
+    savePhone(phone);
+    setVolunteerPhone(link.volunteerId, phone).catch(() => {});
+    setNeedsPhone(false);
+  }
 
   function handleSaveMarker(note) {
     const marker = { lat: pinLocation.lat, lng: pinLocation.lng, note };
@@ -113,12 +134,28 @@ export default function App() {
         )}
       </div>
 
+      <MessageBanners messages={messages}
+        onReply={text => replyToMessage(link.searchId, link.dayId, { volunteerId: link.volunteerId, text })} />
+
       {pinLocation && (
         <MarkerForm
           location={pinLocation}
           onSave={handleSaveMarker}
           onCancel={() => setPinLocation(null)}
         />
+      )}
+
+      {needsPhone && (
+        <form onSubmit={handleSavePhone} style={{
+          position: 'fixed', bottom: zone.status === 'searched' ? 152 : 84, left: 16, right: 16, zIndex: 10,
+          background: '#fff', borderRadius: 12, padding: 16,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
+        }}>
+          <p style={{ marginBottom: 8, fontWeight: 600 }}>What's your phone number?</p>
+          <p style={{ marginBottom: 8, fontSize: 12, color: '#6b7280' }}>So command can reach you directly.</p>
+          <input value={phoneInput} onChange={e => setPhoneInput(e.target.value)} placeholder="Phone number" type="tel" autoFocus style={{ width: '100%', boxSizing: 'border-box' }} />
+          <button type="submit" style={{ marginTop: 10, width: '100%' }}>Save</button>
+        </form>
       )}
 
       {zone.status === 'searched' && (

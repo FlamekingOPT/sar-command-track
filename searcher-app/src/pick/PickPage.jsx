@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { getSearch } from '../firebase/searches';
 import { watchZones } from '../firebase/zones';
 import { claimZone, ASSIGNABLE } from './claimZone';
-import { getIdentity, saveName } from './identity';
+import { getIdentity, saveName, savePhone } from './identity';
 import { PickMap } from './PickMap';
 
 // Day management arrives in Plan 4; until then the whole system uses one fixed day.
@@ -13,6 +13,7 @@ export function PickPage({ searchId }) {
   const [zones, setZones] = useState([]);
   const [pendingZone, setPendingZone] = useState(null);
   const [nameInput, setNameInput] = useState('');
+  const [phoneInput, setPhoneInput] = useState('');
   const [claiming, setClaiming] = useState(false);
   const [requestStatus, setRequestStatus] = useState(null);
   const [requestError, setRequestError] = useState(null);
@@ -28,13 +29,13 @@ export function PickPage({ searchId }) {
   if (search === undefined) return <p style={{ padding: 24 }}>Loading…</p>;
   if (search === null) return <p style={{ padding: 24 }}>This search link isn't valid.</p>;
 
-  async function submitRequest(zone, name) {
+  async function submitRequest(zone, name, phone) {
     setRequestError(null);
     setRequestStatus(null);
     setClaiming(true);
     try {
       const token = await claimZone({
-        searchId: search.id, dayId: DAY_ID, zoneId: zone.id, volunteerId: identity.id, name,
+        searchId: search.id, dayId: DAY_ID, zoneId: zone.id, volunteerId: identity.id, name, phone,
       });
       if (!token) { setRequestStatus('no_availability'); setClaiming(false); return; }
       window.location.href = `/s/${token}`;
@@ -47,15 +48,21 @@ export function PickPage({ searchId }) {
   function handleTapZone(zoneId) {
     const zone = zones.find(z => z.id === zoneId);
     if (!zone || !ASSIGNABLE.includes(zone.status)) return;
-    if (!identity.name) { setPendingZone(zone); return; }
-    submitRequest(zone, identity.name);
+    if (!identity.name || !identity.phone) {
+      setNameInput(identity.name ?? '');
+      setPhoneInput(identity.phone ?? '');
+      setPendingZone(zone);
+      return;
+    }
+    submitRequest(zone, identity.name, identity.phone);
   }
 
   function handleNameSubmit(e) {
     e.preventDefault();
-    if (!nameInput.trim()) return;
+    if (!nameInput.trim() || !phoneInput.trim()) return;
     saveName(nameInput.trim());
-    submitRequest(pendingZone, nameInput.trim());
+    savePhone(phoneInput.trim());
+    submitRequest(pendingZone, nameInput.trim(), phoneInput.trim());
     setPendingZone(null);
   }
 
@@ -96,8 +103,9 @@ export function PickPage({ searchId }) {
           background: '#fff', borderRadius: 12, padding: 16,
           boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
         }}>
-          <p style={{ marginBottom: 8, fontWeight: 600 }}>What's your name?</p>
-          <input value={nameInput} onChange={e => setNameInput(e.target.value)} placeholder="First Last" autoFocus />
+          <p style={{ marginBottom: 8, fontWeight: 600 }}>What's your name and phone?</p>
+          <input value={nameInput} onChange={e => setNameInput(e.target.value)} placeholder="First Last" autoFocus style={{ width: '100%', boxSizing: 'border-box', marginBottom: 8 }} />
+          <input value={phoneInput} onChange={e => setPhoneInput(e.target.value)} placeholder="Phone number" type="tel" style={{ width: '100%', boxSizing: 'border-box' }} />
           <button type="submit" style={{ marginTop: 10, width: '100%' }}>Join Zone {pendingZone.number}</button>
         </form>
       )}
